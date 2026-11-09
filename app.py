@@ -3,25 +3,32 @@ import pandas as pd
 from datetime import date
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
-# Configuración de la página
 st.set_page_config(page_title="Rendición de Gastos - Wolf Internacional", page_icon="🚗", layout="wide")
 
 st.title("🚗 Wolf Internacional - Carga Múltiple de Rendiciones")
-st.markdown("Utiliza esta herramienta para registrar varios tickets o facturas en una sola rendición.")
+st.markdown("Herramienta móvil para registrar comprobantes de viaje.")
 
-# ID de tu Google Sheet existente
 SPREADSHEET_ID = "1-VBqXnZ0OQC5YaAiMG2-c7HPCMS1P5grtiaJlfFvBBI"
+
+def obtener_cliente_gspread():
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    if "gcp_service_account" in st.secrets:
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+    else:
+        creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
+    return gspread.authorize(creds)
 
 def guardar_en_sheets(coordinador, email, coche, destino, df_gastos):
     try:
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
-        client = gspread.authorize(creds)
+        client = obtener_cliente_gspread()
         sheet = client.open_by_key(SPREADSHEET_ID).sheet1
 
-        # Recorre cada fila del editor interactivo y la agrega a la hoja
-        for index, row in df_gastos.iterrows():
+        for _, row in df_gastos.iterrows():
             sheet.append_row([
                 coordinador,
                 email,
@@ -35,7 +42,49 @@ def guardar_en_sheets(coordinador, email, coche, destino, df_gastos):
             ])
         return True
     except Exception as e:
-        st.error(f"Error al conectar con Google Sheets: {e}")
+        st.error(f"Error al guardar en Google Sheets: {e}")
+        return False
+
+def enviar_notificacion_email(coordinador, coche, destino, df_gastos):
+    try:
+        sender_email = st.secrets["email"]["sender_email"]
+        sender_password = st.secrets["email"]["sender_password"]
+        receiver_email = st.secrets["email"]["receiver_email"]
+
+        total = df_gastos["Monto ($)"].sum()
+        
+        filas_html = ""
+        for _, r in df_gastos.iterrows():
+            filas_html += f"<tr><td>{r['Fecha de compra']}</td><td>{r['N° Orden Interno TK']}</td><td>{r['N° Factura / TK']}</td><td>{r['Abona con viático']}</td><td style='text-align:right'>${r['Monto ($)']:,.2f}</td></tr>"
+
+        html_body = f"""
+        <h2>Nueva Rendición Recibida - Wolf Internacional</h2>
+        <p><b>Coordinador:</b> {coordinador}</p>
+        <p><b>Coche:</b> {coche} | <b>Destino:</b> {destino}</p>
+        <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;">
+            <tr style="background:#1a3c6e;color:white;">
+                <th>Fecha</th><th>TK Interno</th><th>Factura/TK</th><th>Viático</th><th>Monto</th>
+            </tr>
+            {filas_html}
+            <tr style="font-weight:bold;background:#f0f0f0;">
+                <td colspan="4" style="text-align:right">TOTAL</td>
+                <td style="text-align:right">${total:,.2f}</td>
+            </tr>
+        </table>
+        """
+
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = f"[Rendición] {coordinador} | {destino} | ${total:,.2f}"
+        msg["From"] = sender_email
+        msg["To"] = receiver_email
+        msg.attach(MIMEText(html_body, "html"))
+
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(sender_email, sender_password)
+            server.sendmail(sender_email, receiver_email, msg.as_string())
+        return True
+    except Exception as e:
+        st.warning(f"No se pudo enviar la notificación por correo: {e}")
         return False
 
 with st.form("form_multi_rendicion"):
@@ -52,18 +101,14 @@ with st.form("form_multi_rendicion"):
 
     st.markdown("---")
     st.subheader("2. Detalle de Comprobantes (Múltiples Gastos)")
-    st.markdown("Agrega o edita los datos de cada ticket o factura que deseas rendir:")
 
-    # Grilla interactiva para múltiples gastos
-    df_default = pd.DataFrame([
-        {
-            "Fecha de compra": date.today(),
-            "N° Orden Interno TK": "",
-            "N° Factura / TK": "",
-            "Monto ($)": 0.0,
-            "Abona con viático": "Sí"
-        }
-    ])
+    df_default = pd.DataFrame([{
+        "Fecha de compra": date.today(),
+        "N° Orden Interno TK": "",
+        "N° Factura / TK": "",
+        "Monto ($)": 0.0,
+        "Abona con viático": "Sí"
+    }])
 
     df_gastos = st.data_editor(
         df_default,
@@ -79,23 +124,13 @@ with st.form("form_multi_rendicion"):
         use_container_width=True
     )
 
-    st.markdown("---")
-    st.subheader("3. Comprobantes Adjuntos")
-    archivos = st.file_uploader("Sube los tickets o facturas (PDF o imágenes)", type=["pdf", "png", "jpg", "jpeg"], accept_multiple_files=True)
-
     enviado = st.form_submit_button("🚀 Enviar Rendición Completa")
 
 if enviado:
     if not coordinador or not email or df_gastos.empty:
-        st.error("⚠️ Por favor completa los datos obligatorios (Coordinador, Correo y al menos un gasto en la tabla).")
+        st.error("⚠️ Por favor completa los datos obligatorios.")
     else:
-        total_rendicion = df_gastos["Monto ($)"].sum()
-        
-        # Guardar en Google Sheets
-        exito = guardar_en_sheets(coordinador, email, coche, destino, df_gastos)
-        
-        if exito:
-            st.success(f"¡Rendición procesada y guardada con éxito para **{coordinador}**!")
-            st.info(f"Total acumulado en este envío: **${total_rendicion:,.2f}** con {len(df_gastos)} comprobante(s).")
+        if guardar_en_sheets(coordinador, email, coche, destino, df_gastos):
+            enviar_notificacion_email(coordinador, coche, destino, df_gastos)
+            st.success(f"¡Rendición procesada con éxito para **{coordinador}**!")
             st.dataframe(df_gastos, use_container_width=True)
-
