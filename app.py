@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 from datetime import date
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2.service_account import Credentials
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -16,11 +16,10 @@ SPREADSHEET_ID = "1-VBqXnZ0OQC5YaAiMG2-c7HPCMS1P5grtiaJlfFvBBI"
 
 def obtener_cliente_gspread():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    if "gcp_service_account" in st.secrets:
-        creds_dict = dict(st.secrets["gcp_service_account"])
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-    else:
-        creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
+    creds_dict = dict(st.secrets["gcp_service_account"])
+    if "private_key" in creds_dict:
+        creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+    creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
     return gspread.authorize(creds)
 
 def guardar_en_sheets(coordinador, email, coche, destino, df_gastos):
@@ -45,7 +44,7 @@ def guardar_en_sheets(coordinador, email, coche, destino, df_gastos):
         st.error(f"Error al guardar en Google Sheets: {e}")
         return False
 
-def enviar_notificacion_email(coordinador, coche, destino, df_gastos):
+def enviar_notificacion_email(coordinador, coche, destino, df_gastos, archivos):
     try:
         sender_email = st.secrets["email"]["sender_email"]
         sender_password = st.secrets["email"]["sender_password"]
@@ -57,10 +56,13 @@ def enviar_notificacion_email(coordinador, coche, destino, df_gastos):
         for _, r in df_gastos.iterrows():
             filas_html += f"<tr><td>{r['Fecha de compra']}</td><td>{r['N° Orden Interno TK']}</td><td>{r['N° Factura / TK']}</td><td>{r['Abona con viático']}</td><td style='text-align:right'>${r['Monto ($)']:,.2f}</td></tr>"
 
+        nombres_archivos = ", ".join([f.name for f in archivos]) if archivos else "Ninguno"
+
         html_body = f"""
         <h2>Nueva Rendición Recibida - Wolf Internacional</h2>
         <p><b>Coordinador:</b> {coordinador}</p>
         <p><b>Coche:</b> {coche} | <b>Destino:</b> {destino}</p>
+        <p><b>Archivos adjuntos:</b> {nombres_archivos}</p>
         <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;">
             <tr style="background:#1a3c6e;color:white;">
                 <th>Fecha</th><th>TK Interno</th><th>Factura/TK</th><th>Viático</th><th>Monto</th>
@@ -124,6 +126,14 @@ with st.form("form_multi_rendicion"):
         use_container_width=True
     )
 
+    st.markdown("---")
+    st.subheader("3. Adjuntar Comprobantes (Opcional)")
+    archivos_adjuntos = st.file_uploader(
+        "Sube fotos o PDFs de los tickets",
+        type=["png", "jpg", "jpeg", "pdf"],
+        accept_multiple_files=True
+    )
+
     enviado = st.form_submit_button("🚀 Enviar Rendición Completa")
 
 if enviado:
@@ -131,6 +141,6 @@ if enviado:
         st.error("⚠️ Por favor completa los datos obligatorios.")
     else:
         if guardar_en_sheets(coordinador, email, coche, destino, df_gastos):
-            enviar_notificacion_email(coordinador, coche, destino, df_gastos)
+            enviar_notificacion_email(coordinador, coche, destino, df_gastos, archivos_adjuntos)
             st.success(f"¡Rendición procesada con éxito para **{coordinador}**!")
             st.dataframe(df_gastos, use_container_width=True)
