@@ -17,8 +17,11 @@ SPREADSHEET_ID = "1-VBqXnZ0OQC5YaAiMG2-c7HPCMS1P5grtiaJlfFvBBI"
 def obtener_cliente_gspread():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds_dict = dict(st.secrets["gcp_service_account"])
+    
+    # Asegura el formato correcto de los saltos de línea de la clave privada
     if "private_key" in creds_dict:
         creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+        
     creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
     return gspread.authorize(creds)
 
