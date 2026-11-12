@@ -37,7 +37,6 @@ def guardar_en_sheets(coordinador, email, coche, destino, df_gastos, archivos):
             if archivos else "Sin adjunto"
         )
 
-        # Autonumeramos correlativamente del 1 en adelante las filas antes de guardarlas
         for idx, row in df_gastos.iterrows():
             numero_orden = str(idx + 1)
             
@@ -47,7 +46,7 @@ def guardar_en_sheets(coordinador, email, coche, destino, df_gastos, archivos):
                 destino,
                 f"{coordinador} (Coche: {coche})" if coche else coordinador,
                 str(row["Fecha de compra"]),
-                numero_orden,  # Se autonumera automáticamente 1, 2, 3...
+                numero_orden,
                 str(row["N° Factura / TK"]),
                 float(row["Monto ($)"]),
                 enlace_comprobante,
@@ -131,7 +130,6 @@ with st.form("form_multi_rendicion"):
 
     st.markdown("---")
     st.subheader("2. Detalle de Comprobantes (Múltiples Gastos)")
-    st.info("💡 El número de orden interno (N° Orden Interno TK) se asigna y numera automáticamente de forma correlativa (1, 2, 3...) a medida que agregas filas hacia abajo.")
 
     df_default = pd.DataFrame([{
         "Fecha de compra": date.today(),
