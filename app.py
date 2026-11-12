@@ -154,14 +154,19 @@ with st.form("form_multi_rendicion"):
     )
 
     st.markdown("---")
-    st.subheader("3. Adjuntar Comprobantes (Opcional)")
+    st.subheader("3. Adjuntar Comprobantes (Obligatorio)")
     archivos_adjuntos = st.file_uploader(
-        "Sube fotos o PDFs de los tickets",
+        "Sube fotos o PDFs de los tickets (Debe adjuntar al menos uno para habilitar el envío)",
         type=["png", "jpg", "jpeg", "pdf"],
         accept_multiple_files=True
     )
 
-    enviado = st.form_submit_button("🚀 Enviar Rendición Completa")
+    # Se deshabilita el botón si no hay archivos cargados
+    sin_archivos = not archivos_adjuntos
+    if sin_archivos:
+        st.warning("⚠️ Debes adjuntar al menos un comprobante para poder enviar la rendición.")
+
+    enviado = st.form_submit_button("🚀 Enviar Rendición Completa", disabled=sin_archivos)
 
 if enviado:
     if not coordinador or not email or df_gastos.empty:
