@@ -13,7 +13,7 @@ st.set_page_config(page_title="Rendición de Gastos - Wolf Internacional", page_
 st.title("🚗 Wolf Internacional - Carga Múltiple de Rendiciones")
 st.markdown("Herramienta móvil para registrar comprobantes de viaje.")
 
-SPREADSHEET_ID = "1-VBqXnZ0OQC5YaAiMG2-c7HPCMS1P5grtiaJlfFvBBI"
+SPREADSHEET_ID = "1TqAAUw9K_Arn6aDTAZJ4sXciSe9FpO99cMXKenY_AcU"
 
 def obtener_cliente_gspread():
     scopes = [
