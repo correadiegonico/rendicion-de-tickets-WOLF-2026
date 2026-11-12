@@ -13,6 +13,7 @@ st.set_page_config(page_title="Rendición de Gastos - Wolf Internacional", page_
 st.title("🚗 Wolf Internacional - Carga Múltiple de Rendiciones")
 st.markdown("Herramienta móvil para registrar comprobantes de viaje.")
 
+# ID actualizado de tu Google Sheet nuevo
 SPREADSHEET_ID = "1TqAAUw9K_Arn6aDTAZJ4sXciSe9FpO99cMXKenY_AcU"
 
 def obtener_cliente_gspread():
@@ -37,8 +38,17 @@ def guardar_en_sheets(coordinador, email, coche, destino, df_gastos, archivos):
         )
 
         for _, row in df_gastos.iterrows():
-            # Orden exacto columnas A -> I:
-            # A: Destino | B: Coordinador | C: Fecha | D: Orden TK | E: Factura/TK | F: Monto | G: Enlace | H: Mail | I: Viático
+            # Mapeo exacto de columnas A hasta J:
+            # A: Destino
+            # B: Coordinador
+            # C: Fecha de compra
+            # D: N° orden tk
+            # E: N° factura / tk
+            # F: Monto
+            # G: Enlace al Comprobante
+            # H: Mail coordinador
+            # I: Abona con viático
+            # J: Observaciones
             sheet.append_row([
                 destino,
                 f"{coordinador} (Coche: {coche})" if coche else coordinador,
@@ -48,7 +58,8 @@ def guardar_en_sheets(coordinador, email, coche, destino, df_gastos, archivos):
                 float(row["Monto ($)"]),
                 enlace_comprobante,
                 email,
-                str(row["Abona con viático"])
+                str(row["Abona con viático"]),
+                str(row.get("Observaciones", ""))
             ])
         return True
     except Exception as e:
@@ -66,7 +77,8 @@ def enviar_notificacion_email(coordinador, coche, destino, df_gastos, archivos):
         
         filas_html = ""
         for _, r in df_gastos.iterrows():
-            filas_html += f"<tr><td>{r['Fecha de compra']}</td><td>{r['N° Orden Interno TK']}</td><td>{r['N° Factura / TK']}</td><td>{r['Abona con viático']}</td><td style='text-align:right'>${r['Monto ($)']:,.2f}</td></tr>"
+            obs = r.get("Observaciones", "-")
+            filas_html += f"<tr><td>{r['Fecha de compra']}</td><td>{r['N° Orden Interno TK']}</td><td>{r['N° Factura / TK']}</td><td>{r['Abona con viático']}</td><td>{obs}</td><td style='text-align:right'>${r['Monto ($)']:,.2f}</td></tr>"
 
         nombres_archivos = ", ".join([f.name for f in archivos]) if archivos else "Ninguno"
 
@@ -77,11 +89,11 @@ def enviar_notificacion_email(coordinador, coche, destino, df_gastos, archivos):
         <p><b>Archivos adjuntos:</b> {nombres_archivos}</p>
         <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;">
             <tr style="background:#1a3c6e;color:white;">
-                <th>Fecha</th><th>TK Interno</th><th>Factura/TK</th><th>Viático</th><th>Monto</th>
+                <th>Fecha</th><th>TK Interno</th><th>Factura/TK</th><th>Viático</th><th>Observaciones</th><th>Monto</th>
             </tr>
             {filas_html}
             <tr style="font-weight:bold;background:#f0f0f0;">
-                <td colspan="4" style="text-align:right">TOTAL</td>
+                <td colspan="5" style="text-align:right">TOTAL</td>
                 <td style="text-align:right">${total:,.2f}</td>
             </tr>
         </table>
@@ -96,7 +108,6 @@ def enviar_notificacion_email(coordinador, coche, destino, df_gastos, archivos):
         cuerpo_html.attach(MIMEText(html_body, "html"))
         msg.attach(cuerpo_html)
 
-        # Adjunta realmente los archivos al correo
         if archivos:
             for archivo in archivos:
                 adjunto = MIMEApplication(archivo.getvalue(), Name=archivo.name)
@@ -117,7 +128,7 @@ with st.form("form_multi_rendicion"):
     with col1:
         coordinador = st.text_input("Nombre y Apellido del Coordinador")
     with col2:
-        email = st.text_input("Correo electrónico")
+        email = st.text_input("Correo electrónico coordinador")  # Cambiado aquí
     with col3:
         coche = st.text_input("N° de Coche / Unidad")
         
@@ -131,7 +142,8 @@ with st.form("form_multi_rendicion"):
         "N° Orden Interno TK": "",
         "N° Factura / TK": "",
         "Monto ($)": 0.0,
-        "Abona con viático": "Sí"
+        "Abona con viático": "Sí",
+        "Observaciones": ""  # Añadido campo por defecto
     }])
 
     df_gastos = st.data_editor(
@@ -142,7 +154,8 @@ with st.form("form_multi_rendicion"):
             "N° Orden Interno TK": st.column_config.TextColumn("N° Orden Interno TK", required=True),
             "N° Factura / TK": st.column_config.TextColumn("N° Factura / Proveedor", required=True),
             "Monto ($)": st.column_config.NumberColumn("Monto ($)", min_value=0.0, format="$ %.2f", required=True),
-            "Abona con viático": st.column_config.SelectboxColumn("¿Abona con viático?", options=["Sí", "No"], required=True)
+            "Abona con viático": st.column_config.SelectboxColumn("¿Abona con viático?", options=["Sí", "No"], required=True),
+            "Observaciones": st.column_config.TextColumn("Observaciones", required=False)  # Añadida configuración de columna
         },
         hide_index=True,
         use_container_width=True
