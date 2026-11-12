@@ -13,7 +13,7 @@ st.set_page_config(page_title="Rendición de Gastos - Wolf Internacional", page_
 st.title("🚗 Wolf Internacional - Carga Múltiple de Rendiciones")
 st.markdown("Herramienta móvil para registrar comprobantes de viaje.")
 
-# ID actualizado de tu Google Sheet nuevo
+# ID de tu Google Sheet
 SPREADSHEET_ID = "1TqAAUw9K_Arn6aDTAZJ4sXciSe9FpO99cMXKenY_AcU"
 
 def obtener_cliente_gspread():
@@ -37,23 +37,17 @@ def guardar_en_sheets(coordinador, email, coche, destino, df_gastos, archivos):
             if archivos else "Sin adjunto"
         )
 
-        for _, row in df_gastos.iterrows():
+        # Autonumeramos correlativamente del 1 en adelante las filas antes de guardarlas
+        for idx, row in df_gastos.iterrows():
+            numero_orden = str(idx + 1)
+            
             # Mapeo exacto de columnas A hasta J:
-            # A: Destino
-            # B: Coordinador
-            # C: Fecha de compra
-            # D: N° orden tk
-            # E: N° factura / tk
-            # F: Monto
-            # G: Enlace al Comprobante
-            # H: Mail coordinador
-            # I: Abona con viático
-            # J: Observaciones
+            # A: Destino | B: Coordinador | C: Fecha | D: Orden TK | E: Factura/TK | F: Monto | G: Enlace | H: Mail | I: Viático | J: Observaciones
             sheet.append_row([
                 destino,
                 f"{coordinador} (Coche: {coche})" if coche else coordinador,
                 str(row["Fecha de compra"]),
-                str(row["N° Orden Interno TK"]),
+                numero_orden,  # Se autonumera automáticamente 1, 2, 3...
                 str(row["N° Factura / TK"]),
                 float(row["Monto ($)"]),
                 enlace_comprobante,
@@ -76,9 +70,10 @@ def enviar_notificacion_email(coordinador, coche, destino, df_gastos, archivos):
         total = df_gastos["Monto ($)"].sum()
         
         filas_html = ""
-        for _, r in df_gastos.iterrows():
+        for idx, r in df_gastos.iterrows():
+            num_tk = idx + 1
             obs = r.get("Observaciones", "-")
-            filas_html += f"<tr><td>{r['Fecha de compra']}</td><td>{r['N° Orden Interno TK']}</td><td>{r['N° Factura / TK']}</td><td>{r['Abona con viático']}</td><td>{obs}</td><td style='text-align:right'>${r['Monto ($)']:,.2f}</td></tr>"
+            filas_html += f"<tr><td>{num_tk}</td><td>{r['Fecha de compra']}</td><td>{r['N° Factura / TK']}</td><td>{r['Abona con viático']}</td><td>{obs}</td><td style='text-align:right'>${r['Monto ($)']:,.2f}</td></tr>"
 
         nombres_archivos = ", ".join([f.name for f in archivos]) if archivos else "Ninguno"
 
@@ -89,7 +84,7 @@ def enviar_notificacion_email(coordinador, coche, destino, df_gastos, archivos):
         <p><b>Archivos adjuntos:</b> {nombres_archivos}</p>
         <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;">
             <tr style="background:#1a3c6e;color:white;">
-                <th>Fecha</th><th>TK Interno</th><th>Factura/TK</th><th>Viático</th><th>Observaciones</th><th>Monto</th>
+                <th>N° TK</th><th>Fecha</th><th>Factura/TK</th><th>Viático</th><th>Observaciones</th><th>Monto</th>
             </tr>
             {filas_html}
             <tr style="font-weight:bold;background:#f0f0f0;">
@@ -128,7 +123,7 @@ with st.form("form_multi_rendicion"):
     with col1:
         coordinador = st.text_input("Nombre y Apellido del Coordinador")
     with col2:
-        email = st.text_input("Correo electrónico coordinador")  # Cambiado aquí
+        email = st.text_input("Correo electrónico coordinador")
     with col3:
         coche = st.text_input("N° de Coche / Unidad")
         
@@ -136,14 +131,14 @@ with st.form("form_multi_rendicion"):
 
     st.markdown("---")
     st.subheader("2. Detalle de Comprobantes (Múltiples Gastos)")
+    st.info("💡 El número de orden interno (N° Orden Interno TK) se asigna y numera automáticamente de forma correlativa (1, 2, 3...) a medida que agregas filas hacia abajo.")
 
     df_default = pd.DataFrame([{
         "Fecha de compra": date.today(),
-        "N° Orden Interno TK": "",
         "N° Factura / TK": "",
         "Monto ($)": 0.0,
         "Abona con viático": "Sí",
-        "Observaciones": ""  # Añadido campo por defecto
+        "Observaciones": ""
     }])
 
     df_gastos = st.data_editor(
@@ -151,11 +146,10 @@ with st.form("form_multi_rendicion"):
         num_rows="dynamic",
         column_config={
             "Fecha de compra": st.column_config.DateColumn("Fecha", format="DD/MM/YYYY", required=True),
-            "N° Orden Interno TK": st.column_config.TextColumn("N° Orden Interno TK", required=True),
             "N° Factura / TK": st.column_config.TextColumn("N° Factura / Proveedor", required=True),
             "Monto ($)": st.column_config.NumberColumn("Monto ($)", min_value=0.0, format="$ %.2f", required=True),
             "Abona con viático": st.column_config.SelectboxColumn("¿Abona con viático?", options=["Sí", "No"], required=True),
-            "Observaciones": st.column_config.TextColumn("Observaciones", required=False)  # Añadida configuración de columna
+            "Observaciones": st.column_config.TextColumn("Observaciones", required=False)
         },
         hide_index=True,
         use_container_width=True
