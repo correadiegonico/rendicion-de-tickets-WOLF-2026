@@ -8,9 +8,9 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
 
-st.set_page_config(page_title="Rendición de Gastos - Wolf Internacional", page_icon="🚗", layout="wide")
+st.set_page_config(page_title="Rendición de Gastos - Wolf Internacional", page_icon="🐺", layout="wide")
 
-st.title("🚗 Wolf Internacional - Carga Múltiple de Rendiciones")
+st.title("🐺 Wolf Internacional - Carga Múltiple de Rendiciones")
 st.markdown("Herramienta móvil para registrar comprobantes de viaje.")
 
 # ID de tu Google Sheet
