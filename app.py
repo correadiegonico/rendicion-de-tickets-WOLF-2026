@@ -6,6 +6,7 @@ from google.oauth2.service_account import Credentials
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.mime.application import MIMEApplication
 
 st.set_page_config(page_title="Rendición de Gastos - Wolf Internacional", page_icon="🚗", layout="wide")
 
@@ -15,36 +16,44 @@ st.markdown("Herramienta móvil para registrar comprobantes de viaje.")
 SPREADSHEET_ID = "1-VBqXnZ0OQC5YaAiMG2-c7HPCMS1P5grtiaJlfFvBBI"
 
 def obtener_cliente_gspread():
-    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
     creds_dict = dict(st.secrets["gcp_service_account"])
-    
-    # Asegura el formato correcto de los saltos de línea de la clave privada
     if "private_key" in creds_dict:
         creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
-        
-    creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
+    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     return gspread.authorize(creds)
 
-def guardar_en_sheets(coordinador, email, coche, destino, df_gastos):
+def guardar_en_sheets(coordinador, email, coche, destino, df_gastos, archivos):
     try:
         client = obtener_cliente_gspread()
         sheet = client.open_by_key(SPREADSHEET_ID).sheet1
 
+        enlace_comprobante = (
+            f"Enviado por mail ({', '.join([f.name for f in archivos])})"
+            if archivos else "Sin adjunto"
+        )
+
         for _, row in df_gastos.iterrows():
+            # Orden exacto columnas A -> I:
+            # A: Destino | B: Coordinador | C: Fecha | D: Orden TK | E: Factura/TK | F: Monto | G: Enlace | H: Mail | I: Viático
             sheet.append_row([
-                coordinador,
-                email,
-                coche,
                 destino,
+                f"{coordinador} (Coche: {coche})" if coche else coordinador,
                 str(row["Fecha de compra"]),
                 str(row["N° Orden Interno TK"]),
                 str(row["N° Factura / TK"]),
                 float(row["Monto ($)"]),
+                enlace_comprobante,
+                email,
                 str(row["Abona con viático"])
             ])
         return True
     except Exception as e:
-        st.error(f"Error al guardar en Google Sheets: {e}")
+        st.error("Error al guardar en Google Sheets:")
+        st.exception(e)
         return False
 
 def enviar_notificacion_email(coordinador, coche, destino, df_gastos, archivos):
@@ -78,11 +87,21 @@ def enviar_notificacion_email(coordinador, coche, destino, df_gastos, archivos):
         </table>
         """
 
-        msg = MIMEMultipart("alternative")
+        msg = MIMEMultipart("mixed")
         msg["Subject"] = f"[Rendición] {coordinador} | {destino} | ${total:,.2f}"
         msg["From"] = sender_email
         msg["To"] = receiver_email
-        msg.attach(MIMEText(html_body, "html"))
+
+        cuerpo_html = MIMEMultipart("alternative")
+        cuerpo_html.attach(MIMEText(html_body, "html"))
+        msg.attach(cuerpo_html)
+
+        # Adjunta realmente los archivos al correo
+        if archivos:
+            for archivo in archivos:
+                adjunto = MIMEApplication(archivo.getvalue(), Name=archivo.name)
+                adjunto["Content-Disposition"] = f'attachment; filename="{archivo.name}"'
+                msg.attach(adjunto)
 
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(sender_email, sender_password)
@@ -143,7 +162,7 @@ if enviado:
     if not coordinador or not email or df_gastos.empty:
         st.error("⚠️ Por favor completa los datos obligatorios.")
     else:
-        if guardar_en_sheets(coordinador, email, coche, destino, df_gastos):
+        if guardar_en_sheets(coordinador, email, coche, destino, df_gastos, archivos_adjuntos):
             enviar_notificacion_email(coordinador, coche, destino, df_gastos, archivos_adjuntos)
             st.success(f"¡Rendición procesada con éxito para **{coordinador}**!")
             st.dataframe(df_gastos, use_container_width=True)
