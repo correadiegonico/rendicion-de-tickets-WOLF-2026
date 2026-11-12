@@ -40,8 +40,6 @@ def guardar_en_sheets(coordinador, email, coche, destino, df_gastos, archivos):
         for idx, row in df_gastos.iterrows():
             numero_orden = str(idx + 1)
             
-            # Mapeo exacto de columnas A hasta J:
-            # A: Destino | B: Coordinador | C: Fecha | D: Orden TK | E: Factura/TK | F: Monto | G: Enlace | H: Mail | I: Viático | J: Observaciones
             sheet.append_row([
                 destino,
                 f"{coordinador} (Coche: {coche})" if coche else coordinador,
@@ -156,21 +154,17 @@ with st.form("form_multi_rendicion"):
     st.markdown("---")
     st.subheader("3. Adjuntar Comprobantes (Obligatorio)")
     archivos_adjuntos = st.file_uploader(
-        "Sube fotos o PDFs de los tickets (Debe adjuntar al menos uno para habilitar el envío)",
+        "Sube fotos o PDFs de los tickets",
         type=["png", "jpg", "jpeg", "pdf"],
         accept_multiple_files=True
     )
 
-    # Se deshabilita el botón si no hay archivos cargados
-    sin_archivos = not archivos_adjuntos
-    if sin_archivos:
-        st.warning("⚠️ Debes adjuntar al menos un comprobante para poder enviar la rendición.")
-
-    enviado = st.form_submit_button("🚀 Enviar Rendición Completa", disabled=sin_archivos)
+    # Botón habilitado siempre, la validación se hace al enviar
+    enviado = st.form_submit_button("🚀 Enviar Rendición Completa")
 
 if enviado:
-    if not coordinador or not email or df_gastos.empty:
-        st.error("⚠️ Por favor completa los datos obligatorios.")
+    if not coordinador or not email or not archivos_adjuntos or df_gastos.empty:
+        st.error("⚠️ Por favor completa los datos obligatorios y asegúrate de adjuntar al menos un comprobante.")
     else:
         if guardar_en_sheets(coordinador, email, coche, destino, df_gastos, archivos_adjuntos):
             enviar_notificacion_email(coordinador, coche, destino, df_gastos, archivos_adjuntos)
