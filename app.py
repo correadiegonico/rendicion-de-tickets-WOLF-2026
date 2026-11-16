@@ -61,21 +61,28 @@ TIPOS_GASTO = [
 
 def calcular_monto_ars(row):
     moneda = row.get("Moneda", "Pesos ARS")
-    monto_ingresado = float(row.get("Monto ($)", 0.0) or 0.0)
+    monto_ticket = float(row.get("Monto", 0.0) or 0.0)
     cotizacion = float(row.get("Conversión", 1.0) or 1.0)
+    monto_ars_manual = float(row.get("Monto en pesos ARS", 0.0) or 0.0)
 
+    # Si el coordinador tipeó un valor manual en "Monto en pesos ARS", se respeta ese número
+    if monto_ars_manual > 0:
+        return round(monto_ars_manual, 2)
+
+    # Si no, se calcula automáticamente multiplicando Monto x Conversión
     if moneda != "Pesos ARS" and cotizacion > 0:
-        return round(monto_ingresado * cotizacion, 2)
-    return round(monto_ingresado, 2)
+        return round(monto_ticket * cotizacion, 2)
+    
+    return round(monto_ticket, 2)
 
 def formatear_observacion_con_moneda(row):
     moneda = row.get("Moneda", "Pesos ARS")
-    monto_ingresado = float(row.get("Monto ($)", 0.0) or 0.0)
+    monto_ticket = float(row.get("Monto", 0.0) or 0.0)
     cotizacion = float(row.get("Conversión", 1.0) or 1.0)
     obs_usuario = str(row.get("Observaciones", "") or "").strip()
 
     if moneda != "Pesos ARS":
-        detalle_cambio = f"[{moneda} {monto_ingresado:,.2f} x Cotiz. {cotizacion:,.2f}]"
+        detalle_cambio = f"[{moneda} {monto_ticket:,.2f} x Cotiz. {cotizacion:,.2f}]"
         return f"{detalle_cambio} {obs_usuario}".strip()
     return obs_usuario
 
@@ -106,7 +113,7 @@ def guardar_en_sheets(coordinador, coche, destino, df_gastos, archivos):
             observaciones_final = formatear_observacion_con_moneda(row)
 
             # Mapeo de columnas A hasta K (Columna H queda vacía para no desfasar las siguientes):
-            # A: Destino | B: Coordinador | C: Fecha | D: Orden TK | E: Factura/TK | F: Monto (ARS)
+            # A: Destino | B: Coordinador | C: Fecha | D: Orden TK | E: Factura/TK | F: Monto en pesos ARS
             # G: Enlace | H: (Vacío) | I: Viático | J: Observaciones | K: Tipo de gasto
             sheet.append_row([
                 destino,
@@ -138,8 +145,8 @@ def enviar_notificacion_email(coordinador, coche, destino, df_gastos, archivos):
 
         for idx, r in df_gastos.iterrows():
             num_tk = idx + 1
+            monto_ticket = float(r.get("Monto", 0.0) or 0.0)
             moneda = r.get("Moneda", "Pesos ARS")
-            monto_orig = float(r.get("Monto ($)", 0.0) or 0.0)
             cotiz = float(r.get("Conversión", 1.0) or 1.0)
             monto_ars = calcular_monto_ars(r)
             total_ars += monto_ars
@@ -153,9 +160,9 @@ def enviar_notificacion_email(coordinador, coche, destino, df_gastos, archivos):
                 f"<td>{num_tk}</td>"
                 f"<td>{r['Fecha de compra']}</td>"
                 f"<td>{r['N° Factura / TK']}</td>"
+                f"<td style='text-align:right'>${monto_ticket:,.2f}</td>"
                 f"<td>{moneda}</td>"
                 f"<td style='text-align:right'>{info_cotiz}</td>"
-                f"<td style='text-align:right'>${monto_orig:,.2f}</td>"
                 f"<td style='text-align:right'><b>${monto_ars:,.2f}</b></td>"
                 f"<td>{r['Abona con viático']}</td>"
                 f"<td>{tipo_gasto}</td>"
@@ -175,10 +182,10 @@ def enviar_notificacion_email(coordinador, coche, destino, df_gastos, archivos):
                 <th>N° TK</th>
                 <th>Fecha</th>
                 <th>Factura/TK</th>
+                <th>Monto Ticket</th>
                 <th>Moneda</th>
                 <th>Conversión</th>
-                <th>Monto Orig.</th>
-                <th>Monto ARS</th>
+                <th>Monto en pesos ARS</th>
                 <th>Viático</th>
                 <th>Tipo de Gasto</th>
                 <th>Observaciones</th>
@@ -229,14 +236,15 @@ with col3:
 
 st.markdown("---")
 st.subheader("2. Detalle de Comprobantes (Múltiples Gastos)")
-st.caption("💡 Si seleccionas USD o Reales, ingresa el importe en esa moneda y la cotización en 'Conversión' para calcular el monto final en ARS automáticamente. En Pesos ARS deja la conversión en 1.")
+st.caption("💡 Ingresa el 'Monto' del ticket. Si es en USD o Reales, completa la 'Conversión' y deja 'Monto en pesos ARS' en 0 para que se calcule solo (o escríbelo manualmente).")
 
 df_default = pd.DataFrame([{
     "Fecha de compra": date.today(),
     "N° Factura / TK": "",
+    "Monto": 0.0,
     "Moneda": "Pesos ARS",
     "Conversión": 1.0,
-    "Monto ($)": 0.0,
+    "Monto en pesos ARS": 0.0,
     "Abona con viático": "Sí",
     "Tipo de gasto": "🍽️ Alimentos",
     "Observaciones": ""
@@ -248,9 +256,10 @@ df_gastos = st.data_editor(
     column_config={
         "Fecha de compra": st.column_config.DateColumn("Fecha", format="DD/MM/YYYY", required=True),
         "N° Factura / TK": st.column_config.TextColumn("N° Factura / Proveedor", required=True),
+        "Monto": st.column_config.NumberColumn("Monto", min_value=0.0, format="$ %.2f", required=True),
         "Moneda": st.column_config.SelectboxColumn("Moneda", options=MONEDAS, default="Pesos ARS", required=True),
         "Conversión": st.column_config.NumberColumn("Conversión", min_value=0.0, format="%.2f", default=1.0, required=False),
-        "Monto ($)": st.column_config.NumberColumn("Monto ($)", min_value=0.0, format="$ %.2f", required=True),
+        "Monto en pesos ARS": st.column_config.NumberColumn("Monto en pesos ARS", min_value=0.0, format="$ %.2f", default=0.0, required=False),
         "Abona con viático": st.column_config.SelectboxColumn("¿Abona con viático?", options=["Sí", "No"], required=True),
         "Tipo de gasto": st.column_config.SelectboxColumn("🏷️ ¿Qué tipo de gasto es?", options=TIPOS_GASTO, required=True),
         "Observaciones": st.column_config.TextColumn("Observaciones", required=False)
@@ -278,5 +287,5 @@ if enviado:
             st.success(f"¡Rendición procesada con éxito para **{coordinador}**!")
             
             df_resumen = df_gastos.copy()
-            df_resumen["Total Final (ARS)"] = df_resumen.apply(calcular_monto_ars, axis=1)
+            df_resumen["Monto en pesos ARS"] = df_resumen.apply(calcular_monto_ars, axis=1)
             st.dataframe(df_resumen, use_container_width=True)
