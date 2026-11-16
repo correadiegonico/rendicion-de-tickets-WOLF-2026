@@ -59,27 +59,25 @@ TIPOS_GASTO = [
     "📦 Otros"
 ]
 
-def calcular_monto_ars(row):
-    moneda = row.get("Moneda", "Pesos ARS")
-    monto_ticket = float(row.get("Monto", 0.0) or 0.0)
-    cotizacion = float(row.get("Conversión", 1.0) or 1.0)
-    monto_ars_manual = float(row.get("Monto en pesos ARS", 0.0) or 0.0)
+def recalcular_tabla(df):
+    df = df.copy()
+    for idx, row in df.iterrows():
+        moneda = row.get("Moneda") or "Pesos ARS"
+        monto_ticket = float(row.get("Monto") or 0.0)
+        cotizacion = float(row.get("Conversión") or 1.0)
 
-    # Si el coordinador tipeó un valor manual en "Monto en pesos ARS", se respeta ese número
-    if monto_ars_manual > 0:
-        return round(monto_ars_manual, 2)
+        if moneda == "Pesos ARS":
+            cotizacion = 1.0
+            df.at[idx, "Conversión"] = 1.0
 
-    # Si no, se calcula automáticamente multiplicando Monto x Conversión
-    if moneda != "Pesos ARS" and cotizacion > 0:
-        return round(monto_ticket * cotizacion, 2)
-    
-    return round(monto_ticket, 2)
+        df.at[idx, "Monto en pesos ARS"] = round(monto_ticket * cotizacion, 2)
+    return df
 
 def formatear_observacion_con_moneda(row):
-    moneda = row.get("Moneda", "Pesos ARS")
-    monto_ticket = float(row.get("Monto", 0.0) or 0.0)
-    cotizacion = float(row.get("Conversión", 1.0) or 1.0)
-    obs_usuario = str(row.get("Observaciones", "") or "").strip()
+    moneda = row.get("Moneda") or "Pesos ARS"
+    monto_ticket = float(row.get("Monto") or 0.0)
+    cotizacion = float(row.get("Conversión") or 1.0)
+    obs_usuario = str(row.get("Observaciones") or "").strip()
 
     if moneda != "Pesos ARS":
         detalle_cambio = f"[{moneda} {monto_ticket:,.2f} x Cotiz. {cotizacion:,.2f}]"
@@ -109,7 +107,7 @@ def guardar_en_sheets(coordinador, coche, destino, df_gastos, archivos):
 
         for idx, row in df_gastos.iterrows():
             numero_orden = str(idx + 1)
-            monto_final_ars = calcular_monto_ars(row)
+            monto_final_ars = float(row["Monto en pesos ARS"])
             observaciones_final = formatear_observacion_con_moneda(row)
 
             # Mapeo de columnas A hasta K (Columna H queda vacía para no desfasar las siguientes):
@@ -140,16 +138,15 @@ def enviar_notificacion_email(coordinador, coche, destino, df_gastos, archivos):
         sender_password = st.secrets["email"]["sender_password"]
         receiver_email = st.secrets["email"]["receiver_email"]
 
-        total_ars = 0.0
+        total_ars = float(df_gastos["Monto en pesos ARS"].sum())
         filas_html = ""
 
         for idx, r in df_gastos.iterrows():
             num_tk = idx + 1
-            monto_ticket = float(r.get("Monto", 0.0) or 0.0)
-            moneda = r.get("Moneda", "Pesos ARS")
-            cotiz = float(r.get("Conversión", 1.0) or 1.0)
-            monto_ars = calcular_monto_ars(r)
-            total_ars += monto_ars
+            monto_ticket = float(r.get("Monto") or 0.0)
+            moneda = r.get("Moneda") or "Pesos ARS"
+            cotiz = float(r.get("Conversión") or 1.0)
+            monto_ars = float(r.get("Monto en pesos ARS") or 0.0)
 
             tipo_gasto = r.get("Tipo de gasto", "-")
             obs = formatear_observacion_con_moneda(r) or "-"
@@ -236,37 +233,43 @@ with col3:
 
 st.markdown("---")
 st.subheader("2. Detalle de Comprobantes (Múltiples Gastos)")
-st.caption("💡 Ingresa el 'Monto' del ticket. Si es en USD o Reales, completa la 'Conversión' y deja 'Monto en pesos ARS' en 0 para que se calcule solo (o escríbelo manualmente).")
 
-df_default = pd.DataFrame([{
-    "Fecha de compra": date.today(),
-    "N° Factura / TK": "",
-    "Monto": 0.0,
-    "Moneda": "Pesos ARS",
-    "Conversión": 1.0,
-    "Monto en pesos ARS": 0.0,
-    "Abona con viático": "Sí",
-    "Tipo de gasto": "🍽️ Alimentos",
-    "Observaciones": ""
-}])
+if "df_gastos" not in st.session_state:
+    st.session_state.df_gastos = pd.DataFrame([{
+        "Fecha de compra": date.today(),
+        "N° Factura / TK": "",
+        "Monto": 0.0,
+        "Moneda": "Pesos ARS",
+        "Conversión": 1.0,
+        "Monto en pesos ARS": 0.0,
+        "Abona con viático": "Sí",
+        "Tipo de gasto": "🍽️ Alimentos",
+        "Observaciones": ""
+    }])
 
-df_gastos = st.data_editor(
-    df_default,
+df_editado = st.data_editor(
+    st.session_state.df_gastos,
     num_rows="dynamic",
     column_config={
-        "Fecha de compra": st.column_config.DateColumn("Fecha", format="DD/MM/YYYY", required=True),
-        "N° Factura / TK": st.column_config.TextColumn("N° Factura / Proveedor", required=True),
-        "Monto": st.column_config.NumberColumn("Monto", min_value=0.0, format="$ %.2f", required=True),
+        "Fecha de compra": st.column_config.DateColumn("Fecha", format="DD/MM/YYYY", default=date.today(), required=True),
+        "N° Factura / TK": st.column_config.TextColumn("N° Factura / Proveedor", default="", required=True),
+        "Monto": st.column_config.NumberColumn("Monto", min_value=0.0, format="$ %.2f", default=0.0, required=True),
         "Moneda": st.column_config.SelectboxColumn("Moneda", options=MONEDAS, default="Pesos ARS", required=True),
         "Conversión": st.column_config.NumberColumn("Conversión", min_value=0.0, format="%.2f", default=1.0, required=False),
-        "Monto en pesos ARS": st.column_config.NumberColumn("Monto en pesos ARS", min_value=0.0, format="$ %.2f", default=0.0, required=False),
-        "Abona con viático": st.column_config.SelectboxColumn("¿Abona con viático?", options=["Sí", "No"], required=True),
-        "Tipo de gasto": st.column_config.SelectboxColumn("🏷️ ¿Qué tipo de gasto es?", options=TIPOS_GASTO, required=True),
-        "Observaciones": st.column_config.TextColumn("Observaciones", required=False)
+        "Monto en pesos ARS": st.column_config.NumberColumn("Monto en pesos ARS", min_value=0.0, format="$ %.2f", default=0.0),
+        "Abona con viático": st.column_config.SelectboxColumn("¿Abona con viático?", options=["Sí", "No"], default="Sí", required=True),
+        "Tipo de gasto": st.column_config.SelectboxColumn("🏷️ ¿Qué tipo de gasto es?", options=TIPOS_GASTO, default="🍽️ Alimentos", required=True),
+        "Observaciones": st.column_config.TextColumn("Observaciones", default="", required=False)
     },
+    disabled=["Monto en pesos ARS"],
     hide_index=True,
     use_container_width=True
 )
+
+df_recalculado = recalcular_tabla(df_editado)
+if not df_recalculado.equals(st.session_state.df_gastos):
+    st.session_state.df_gastos = df_recalculado
+    st.rerun()
 
 st.markdown("---")
 st.subheader("3. Adjuntar Comprobantes (Obligatorio)")
@@ -279,13 +282,12 @@ archivos_adjuntos = st.file_uploader(
 enviado = st.button("🚀 Enviar Rendición Completa", type="primary")
 
 if enviado:
-    if not coordinador or not archivos_adjuntos or df_gastos.empty:
+    df_final = st.session_state.df_gastos
+    if not coordinador or not archivos_adjuntos or df_final.empty:
         st.error("⚠️ Por favor completa el nombre del coordinador y asegúrate de adjuntar al menos un comprobante.")
     else:
-        if guardar_en_sheets(coordinador, coche, destino, df_gastos, archivos_adjuntos):
-            enviar_notificacion_email(coordinador, coche, destino, df_gastos, archivos_adjuntos)
+        if guardar_en_sheets(coordinador, coche, destino, df_final, archivos_adjuntos):
+            enviar_notificacion_email(coordinador, coche, destino, df_final, archivos_adjuntos)
             st.success(f"¡Rendición procesada con éxito para **{coordinador}**!")
+            st.dataframe(df_final, use_container_width=True)
             
-            df_resumen = df_gastos.copy()
-            df_resumen["Monto en pesos ARS"] = df_resumen.apply(calcular_monto_ars, axis=1)
-            st.dataframe(df_resumen, use_container_width=True)
