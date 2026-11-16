@@ -37,6 +37,12 @@ components.html(
 # ID de tu Google Sheet
 SPREADSHEET_ID = "1TqAAUw9K_Arn6aDTAZJ4sXciSe9FpO99cMXKenY_AcU"
 
+MONEDAS = [
+    "Pesos ARS",
+    "USD",
+    "Reales"
+]
+
 TIPOS_GASTO = [
     "🎢 Actividades",
     "🍽️ Alimentos",
@@ -52,6 +58,26 @@ TIPOS_GASTO = [
     "🧳 Viáticos",
     "📦 Otros"
 ]
+
+def calcular_monto_ars(row):
+    moneda = row.get("Moneda", "Pesos ARS")
+    monto_ingresado = float(row.get("Monto ($)", 0.0) or 0.0)
+    cotizacion = float(row.get("Conversión", 1.0) or 1.0)
+
+    if moneda != "Pesos ARS" and cotizacion > 0:
+        return round(monto_ingresado * cotizacion, 2)
+    return round(monto_ingresado, 2)
+
+def formatear_observacion_con_moneda(row):
+    moneda = row.get("Moneda", "Pesos ARS")
+    monto_ingresado = float(row.get("Monto ($)", 0.0) or 0.0)
+    cotizacion = float(row.get("Conversión", 1.0) or 1.0)
+    obs_usuario = str(row.get("Observaciones", "") or "").strip()
+
+    if moneda != "Pesos ARS":
+        detalle_cambio = f"[{moneda} {monto_ingresado:,.2f} x Cotiz. {cotizacion:,.2f}]"
+        return f"{detalle_cambio} {obs_usuario}".strip()
+    return obs_usuario
 
 def obtener_cliente_gspread():
     scopes = [
@@ -76,9 +102,11 @@ def guardar_en_sheets(coordinador, coche, destino, df_gastos, archivos):
 
         for idx, row in df_gastos.iterrows():
             numero_orden = str(idx + 1)
-            
+            monto_final_ars = calcular_monto_ars(row)
+            observaciones_final = formatear_observacion_con_moneda(row)
+
             # Mapeo de columnas A hasta K (Columna H queda vacía para no desfasar las siguientes):
-            # A: Destino | B: Coordinador | C: Fecha | D: Orden TK | E: Factura/TK | F: Monto
+            # A: Destino | B: Coordinador | C: Fecha | D: Orden TK | E: Factura/TK | F: Monto (ARS)
             # G: Enlace | H: (Vacío) | I: Viático | J: Observaciones | K: Tipo de gasto
             sheet.append_row([
                 destino,
@@ -86,11 +114,11 @@ def guardar_en_sheets(coordinador, coche, destino, df_gastos, archivos):
                 str(row["Fecha de compra"]),
                 numero_orden,
                 str(row["N° Factura / TK"]),
-                float(row["Monto ($)"]),
+                monto_final_ars,
                 enlace_comprobante,
                 "",
                 str(row["Abona con viático"]),
-                str(row.get("Observaciones", "")),
+                observaciones_final,
                 str(row.get("Tipo de gasto", ""))
             ])
         return True
@@ -105,22 +133,33 @@ def enviar_notificacion_email(coordinador, coche, destino, df_gastos, archivos):
         sender_password = st.secrets["email"]["sender_password"]
         receiver_email = st.secrets["email"]["receiver_email"]
 
-        total = df_gastos["Monto ($)"].sum()
-        
+        total_ars = 0.0
         filas_html = ""
+
         for idx, r in df_gastos.iterrows():
             num_tk = idx + 1
+            moneda = r.get("Moneda", "Pesos ARS")
+            monto_orig = float(r.get("Monto ($)", 0.0) or 0.0)
+            cotiz = float(r.get("Conversión", 1.0) or 1.0)
+            monto_ars = calcular_monto_ars(r)
+            total_ars += monto_ars
+
             tipo_gasto = r.get("Tipo de gasto", "-")
-            obs = r.get("Observaciones", "-")
+            obs = formatear_observacion_con_moneda(r) or "-"
+            info_cotiz = f"{cotiz:,.2f}" if moneda != "Pesos ARS" else "-"
+
             filas_html += (
                 f"<tr>"
                 f"<td>{num_tk}</td>"
                 f"<td>{r['Fecha de compra']}</td>"
                 f"<td>{r['N° Factura / TK']}</td>"
+                f"<td>{moneda}</td>"
+                f"<td style='text-align:right'>{info_cotiz}</td>"
+                f"<td style='text-align:right'>${monto_orig:,.2f}</td>"
+                f"<td style='text-align:right'><b>${monto_ars:,.2f}</b></td>"
                 f"<td>{r['Abona con viático']}</td>"
                 f"<td>{tipo_gasto}</td>"
                 f"<td>{obs}</td>"
-                f"<td style='text-align:right'>${r['Monto ($)']:,.2f}</td>"
                 f"</tr>"
             )
 
@@ -133,21 +172,30 @@ def enviar_notificacion_email(coordinador, coche, destino, df_gastos, archivos):
         <p><b>Archivos adjuntos:</b> {nombres_archivos}</p>
         <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;">
             <tr style="background:#1a3c6e;color:white;">
-                <th>N° TK</th><th>Fecha</th><th>Factura/TK</th><th>Viático</th><th>Tipo de Gasto</th><th>Observaciones</th><th>Monto</th>
+                <th>N° TK</th>
+                <th>Fecha</th>
+                <th>Factura/TK</th>
+                <th>Moneda</th>
+                <th>Conversión</th>
+                <th>Monto Orig.</th>
+                <th>Monto ARS</th>
+                <th>Viático</th>
+                <th>Tipo de Gasto</th>
+                <th>Observaciones</th>
             </tr>
             {filas_html}
             <tr style="font-weight:bold;background:#f0f0f0;">
-                <td colspan="6" style="text-align:right">TOTAL</td>
-                <td style="text-align:right">${total:,.2f}</td>
+                <td colspan="6" style="text-align:right">TOTAL GENERAL (ARS)</td>
+                <td style="text-align:right">${total_ars:,.2f}</td>
+                <td colspan="3"></td>
             </tr>
         </table>
         """
 
         msg = MIMEMultipart("mixed")
-        msg["Subject"] = f"[Rendición] {coordinador} | {destino} | ${total:,.2f}"
+        msg["Subject"] = f"[Rendición] {coordinador} | {destino} | ${total_ars:,.2f} ARS"
         msg["From"] = sender_email
         
-        # Destinatarios principales
         segundo_receptor = "fbocchi@lantier.com.ar"
         msg["To"] = f"{receiver_email}, {segundo_receptor}"
         destinatarios = [receiver_email, segundo_receptor]
@@ -181,10 +229,13 @@ with col3:
 
 st.markdown("---")
 st.subheader("2. Detalle de Comprobantes (Múltiples Gastos)")
+st.caption("💡 Si seleccionas USD o Reales, ingresa el importe en esa moneda y la cotización en 'Conversión' para calcular el monto final en ARS automáticamente. En Pesos ARS deja la conversión en 1.")
 
 df_default = pd.DataFrame([{
     "Fecha de compra": date.today(),
     "N° Factura / TK": "",
+    "Moneda": "Pesos ARS",
+    "Conversión": 1.0,
     "Monto ($)": 0.0,
     "Abona con viático": "Sí",
     "Tipo de gasto": "🍽️ Alimentos",
@@ -197,6 +248,8 @@ df_gastos = st.data_editor(
     column_config={
         "Fecha de compra": st.column_config.DateColumn("Fecha", format="DD/MM/YYYY", required=True),
         "N° Factura / TK": st.column_config.TextColumn("N° Factura / Proveedor", required=True),
+        "Moneda": st.column_config.SelectboxColumn("Moneda", options=MONEDAS, default="Pesos ARS", required=True),
+        "Conversión": st.column_config.NumberColumn("Conversión", min_value=0.0, format="%.2f", default=1.0, required=False),
         "Monto ($)": st.column_config.NumberColumn("Monto ($)", min_value=0.0, format="$ %.2f", required=True),
         "Abona con viático": st.column_config.SelectboxColumn("¿Abona con viático?", options=["Sí", "No"], required=True),
         "Tipo de gasto": st.column_config.SelectboxColumn("🏷️ ¿Qué tipo de gasto es?", options=TIPOS_GASTO, required=True),
@@ -223,4 +276,7 @@ if enviado:
         if guardar_en_sheets(coordinador, coche, destino, df_gastos, archivos_adjuntos):
             enviar_notificacion_email(coordinador, coche, destino, df_gastos, archivos_adjuntos)
             st.success(f"¡Rendición procesada con éxito para **{coordinador}**!")
-            st.dataframe(df_gastos, use_container_width=True)
+            
+            df_resumen = df_gastos.copy()
+            df_resumen["Total Final (ARS)"] = df_resumen.apply(calcular_monto_ars, axis=1)
+            st.dataframe(df_resumen, use_container_width=True)
