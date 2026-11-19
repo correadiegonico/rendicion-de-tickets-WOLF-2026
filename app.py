@@ -79,16 +79,21 @@ def recalcular_tabla(df):
         df.at[idx, "Monto en pesos ARS"] = round(monto_ticket * cotizacion, 2)
     return df
 
-def formatear_observacion_con_moneda(row):
+def formatear_observacion_con_moneda(row, dinero_disp):
     moneda = row.get("Moneda") or "Pesos ARS"
     monto_ticket = float(row.get("Monto") or 0.0)
     cotizacion = float(row.get("Conversión") or 1.0)
     obs_usuario = str(row.get("Observaciones") or "").strip()
 
+    partes = []
+    if dinero_disp["tipo"] == "Seguro de hotel" and dinero_disp.get("pasajero"):
+        partes.append(f"[Seguro Hotel - Pax: {dinero_disp['pasajero']}]")
     if moneda != "Pesos ARS":
-        detalle_cambio = f"[{moneda} {monto_ticket:,.2f} x Cotiz. {cotizacion:,.2f}]"
-        return f"{detalle_cambio} {obs_usuario}".strip()
-    return obs_usuario
+        partes.append(f"[{moneda} {monto_ticket:,.2f} x Cotiz. {cotizacion:,.2f}]")
+    if obs_usuario:
+        partes.append(obs_usuario)
+
+    return " ".join(partes).strip()
 
 def obtener_cliente_gspread():
     scopes = [
@@ -116,7 +121,7 @@ def guardar_en_sheets(coordinador, coche, destino, dinero_disp, df_gastos, archi
         for idx, row in df_gastos.iterrows():
             numero_orden = str(idx + 1)
             monto_final_ars = float(row["Monto en pesos ARS"])
-            observaciones_final = formatear_observacion_con_moneda(row)
+            observaciones_final = formatear_observacion_con_moneda(row, dinero_disp)
 
             sheet.append_row([
                 destino,
@@ -136,7 +141,6 @@ def guardar_en_sheets(coordinador, coche, destino, dinero_disp, df_gastos, archi
         try:
             sheet_cajas = spreadsheet.worksheet("cajas por coord")
         except gspread.WorksheetNotFound:
-            # Si por alguna razón aún no existe la pestaña con ese nombre exacto, la crea
             sheet_cajas = spreadsheet.add_worksheet(title="cajas por coord", rows="1000", cols="10")
 
         nombre_coord_completo = f"{coordinador} - {destino} (Coche: {coche})" if coche else f"{coordinador} - {destino}"
@@ -144,23 +148,26 @@ def guardar_en_sheets(coordinador, coche, destino, dinero_disp, df_gastos, archi
         if dinero_disp["tipo"] == "No recibe":
             valor_columna_b = "No recibe"
         else:
+            pasajero_txt = (
+                f" (Pasajero: {dinero_disp['pasajero']})"
+                if dinero_disp["tipo"] == "Seguro de hotel" and dinero_disp.get("pasajero")
+                else ""
+            )
             adj_dinero_txt = (
                 f" | Comprobante: {', '.join([f.name for f in archivos_dinero])}"
                 if archivos_dinero else ""
             )
             if dinero_disp["moneda"] == "Pesos ARS":
-                valor_columna_b = f"{dinero_disp['tipo']}: ${dinero_disp['total_ars']:,.2f} ARS{adj_dinero_txt}"
+                valor_columna_b = f"{dinero_disp['tipo']}{pasajero_txt}: ${dinero_disp['total_ars']:,.2f} ARS{adj_dinero_txt}"
             else:
                 valor_columna_b = (
-                    f"{dinero_disp['tipo']}: {dinero_disp['moneda']} {dinero_disp['monto']:,.2f} "
+                    f"{dinero_disp['tipo']}{pasajero_txt}: {dinero_disp['moneda']} {dinero_disp['monto']:,.2f} "
                     f"(Cotiz. {dinero_disp['cotizacion']:,.2f}) = ${dinero_disp['total_ars']:,.2f} ARS{adj_dinero_txt}"
                 )
 
-        # Buscamos la primera fila libre en la columna B para escribir ahí el dato
         col_b_values = sheet_cajas.col_values(2)
         siguiente_fila = len(col_b_values) + 1
         
-        # Registramos el coordinador en Columna A y el dinero disponible en Columna B
         sheet_cajas.update_cell(siguiente_fila, 1, nombre_coord_completo)
         sheet_cajas.update_cell(siguiente_fila, 2, valor_columna_b)
 
@@ -187,7 +194,7 @@ def enviar_notificacion_email(coordinador, coche, destino, dinero_disp, df_gasto
             monto_ars = float(r.get("Monto en pesos ARS") or 0.0)
 
             tipo_gasto = r.get("Tipo de gasto", "-")
-            obs = formatear_observacion_con_moneda(r) or "-"
+            obs = formatear_observacion_con_moneda(r, dinero_disp) or "-"
             info_cotiz = f"{cotiz:,.2f}" if moneda != "Pesos ARS" else "-"
 
             filas_html += (
@@ -211,8 +218,13 @@ def enviar_notificacion_email(coordinador, coche, destino, dinero_disp, df_gasto
         if dinero_disp["tipo"] == "No recibe":
             resumen_dinero_html = "No recibe"
         else:
+            pasajero_html = (
+                f" | <b>Pasajero:</b> {dinero_disp['pasajero']}"
+                if dinero_disp["tipo"] == "Seguro de hotel" and dinero_disp.get("pasajero")
+                else ""
+            )
             resumen_dinero_html = (
-                f"<b>{dinero_disp['tipo']}</b> | Moneda: {dinero_disp['moneda']} | "
+                f"<b>{dinero_disp['tipo']}</b>{pasajero_html} | Moneda: {dinero_disp['moneda']} | "
                 f"Monto: {dinero_disp['monto']:,.2f} | Cotización: {dinero_disp['cotizacion']:,.2f} | "
                 f"<b>Total ARS: ${dinero_disp['total_ars']:,.2f}</b>"
             )
@@ -221,7 +233,7 @@ def enviar_notificacion_email(coordinador, coche, destino, dinero_disp, df_gasto
         <h2>Nueva Rendición Recibida - Wolf Internacional</h2>
         <p><b>Coordinador:</b> {coordinador}</p>
         <p><b>Coche:</b> {coche} | <b>Destino:</b> {destino}</p>
-        <p><b>Dinero disponible recibido:</b> {resumen_dinero_html}</p>
+        <p><b>Dinero disponible para gastos:</b> {resumen_dinero_html}</p>
         <p><b>Archivos adjuntos:</b> {nombres_archivos}</p>
         <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;">
             <tr style="background:#1a3c6e;color:white;">
@@ -283,11 +295,11 @@ with col3:
 st.markdown("---")
 
 # --- BLOQUE 2 ---
-st.subheader("2. Dinero disponible")
+st.subheader("2. Dinero disponible para gastos")
 d_col1, d_col2, d_col3, d_col4, d_col5 = st.columns([1.4, 1.2, 1.2, 1.2, 1.2])
 
 with d_col1:
-    tipo_dinero = st.selectbox("Concepto", OPCIONES_DINERO_DISPONIBLE)
+    tipo_dinero = st.selectbox("Proviene de...", OPCIONES_DINERO_DISPONIBLE)
 
 deshabilitar_montos = (tipo_dinero == "No recibe")
 
@@ -331,6 +343,13 @@ with d_col5:
         disabled=True
     )
 
+pasajero_seguro = ""
+if tipo_dinero == "Seguro de hotel":
+    pasajero_seguro = st.text_input(
+        "Nombre y Apellido del Pasajero (correspondiente al seguro de hotel)",
+        placeholder="Ej: Juan Pérez"
+    )
+
 archivos_dinero_disp = st.file_uploader(
     "Adjuntar comprobante de recepción de viático o transferencia de cambio (USD a ARS)",
     type=["png", "jpg", "jpeg", "pdf"],
@@ -341,6 +360,7 @@ archivos_dinero_disp = st.file_uploader(
 
 dinero_disponible_data = {
     "tipo": tipo_dinero,
+    "pasajero": pasajero_seguro.strip(),
     "moneda": moneda_dinero,
     "monto": monto_dinero,
     "cotizacion": cotizacion_efectiva,
@@ -406,6 +426,8 @@ if enviado:
     df_final = st.session_state.df_gastos
     if not coordinador or not archivos_adjuntos or df_final.empty:
         st.error("⚠️ Por favor completa el nombre del coordinador y asegúrate de adjuntar al menos un comprobante de gasto.")
+    elif tipo_dinero == "Seguro de hotel" and not pasajero_seguro.strip():
+        st.error("⚠️ Seleccionaste 'Seguro de hotel'. Por favor ingresa el Nombre y Apellido del Pasajero.")
     else:
         if guardar_en_sheets(coordinador, coche, destino, dinero_disponible_data, df_final, archivos_adjuntos, archivos_dinero_disp):
             enviar_notificacion_email(coordinador, coche, destino, dinero_disponible_data, df_final, archivos_adjuntos, archivos_dinero_disp)
