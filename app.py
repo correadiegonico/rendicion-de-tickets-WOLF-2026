@@ -14,7 +14,7 @@ st.set_page_config(page_title="Rendición de Gastos - Wolf Internacional", page_
 st.title("🐺 Wolf Internacional - Carga Múltiple de Rendiciones")
 st.markdown("Herramienta móvil para registrar comprobantes de viaje.")
 
-# Script ligero para que al presionar Enter en los campos de texto superiores pase automáticamente al siguiente cuadro
+# Script ligero para que al presionar Enter en los campos de texto pase automáticamente al siguiente cuadro
 components.html(
     """
     <script>
@@ -41,6 +41,12 @@ MONEDAS = [
     "Pesos ARS",
     "USD",
     "Reales"
+]
+
+OPCIONES_DINERO_DISPONIBLE = [
+    "Viático",
+    "Seguro de hotel",
+    "No recibe"
 ]
 
 TIPOS_GASTO = [
@@ -95,14 +101,16 @@ def obtener_cliente_gspread():
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     return gspread.authorize(creds)
 
-def guardar_en_sheets(coordinador, coche, destino, df_gastos, archivos):
+def guardar_en_sheets(coordinador, coche, destino, dinero_disp, df_gastos, archivos_tickets, archivos_dinero):
     try:
         client = obtener_cliente_gspread()
-        sheet = client.open_by_key(SPREADSHEET_ID).sheet1
-
+        spreadsheet = client.open_by_key(SPREADSHEET_ID)
+        
+        # 1. Guardar comprobantes de gastos en la hoja principal (sheet1)
+        sheet = spreadsheet.sheet1
         enlace_comprobante = (
-            f"Enviado por mail ({', '.join([f.name for f in archivos])})"
-            if archivos else "Sin adjunto"
+            f"Enviado por mail ({', '.join([f.name for f in archivos_tickets])})"
+            if archivos_tickets else "Sin adjunto"
         )
 
         for idx, row in df_gastos.iterrows():
@@ -110,9 +118,6 @@ def guardar_en_sheets(coordinador, coche, destino, df_gastos, archivos):
             monto_final_ars = float(row["Monto en pesos ARS"])
             observaciones_final = formatear_observacion_con_moneda(row)
 
-            # Mapeo de columnas A hasta K (Columna H queda vacía para no desfasar las siguientes):
-            # A: Destino | B: Coordinador | C: Fecha | D: Orden TK | E: Factura/TK | F: Monto en pesos ARS
-            # G: Enlace | H: (Vacío) | I: Viático | J: Observaciones | K: Tipo de gasto
             sheet.append_row([
                 destino,
                 f"{coordinador} (Coche: {coche})" if coche else coordinador,
@@ -126,13 +131,46 @@ def guardar_en_sheets(coordinador, coche, destino, df_gastos, archivos):
                 observaciones_final,
                 str(row.get("Tipo de gasto", ""))
             ])
+
+        # 2. Guardar Dinero Disponible en la columna B de la hoja "cajas por coord"
+        try:
+            sheet_cajas = spreadsheet.worksheet("cajas por coord")
+        except gspread.WorksheetNotFound:
+            # Si por alguna razón aún no existe la pestaña con ese nombre exacto, la crea
+            sheet_cajas = spreadsheet.add_worksheet(title="cajas por coord", rows="1000", cols="10")
+
+        nombre_coord_completo = f"{coordinador} - {destino} (Coche: {coche})" if coche else f"{coordinador} - {destino}"
+        
+        if dinero_disp["tipo"] == "No recibe":
+            valor_columna_b = "No recibe"
+        else:
+            adj_dinero_txt = (
+                f" | Comprobante: {', '.join([f.name for f in archivos_dinero])}"
+                if archivos_dinero else ""
+            )
+            if dinero_disp["moneda"] == "Pesos ARS":
+                valor_columna_b = f"{dinero_disp['tipo']}: ${dinero_disp['total_ars']:,.2f} ARS{adj_dinero_txt}"
+            else:
+                valor_columna_b = (
+                    f"{dinero_disp['tipo']}: {dinero_disp['moneda']} {dinero_disp['monto']:,.2f} "
+                    f"(Cotiz. {dinero_disp['cotizacion']:,.2f}) = ${dinero_disp['total_ars']:,.2f} ARS{adj_dinero_txt}"
+                )
+
+        # Buscamos la primera fila libre en la columna B para escribir ahí el dato
+        col_b_values = sheet_cajas.col_values(2)
+        siguiente_fila = len(col_b_values) + 1
+        
+        # Registramos el coordinador en Columna A y el dinero disponible en Columna B
+        sheet_cajas.update_cell(siguiente_fila, 1, nombre_coord_completo)
+        sheet_cajas.update_cell(siguiente_fila, 2, valor_columna_b)
+
         return True
     except Exception as e:
         st.error("Error al guardar en Google Sheets:")
         st.exception(e)
         return False
 
-def enviar_notificacion_email(coordinador, coche, destino, df_gastos, archivos):
+def enviar_notificacion_email(coordinador, coche, destino, dinero_disp, df_gastos, archivos_tickets, archivos_dinero):
     try:
         sender_email = st.secrets["email"]["sender_email"]
         sender_password = st.secrets["email"]["sender_password"]
@@ -167,12 +205,23 @@ def enviar_notificacion_email(coordinador, coche, destino, df_gastos, archivos):
                 f"</tr>"
             )
 
-        nombres_archivos = ", ".join([f.name for f in archivos]) if archivos else "Ninguno"
+        todos_los_archivos = list(archivos_tickets or []) + list(archivos_dinero or [])
+        nombres_archivos = ", ".join([f.name for f in todos_los_archivos]) if todos_los_archivos else "Ninguno"
+
+        if dinero_disp["tipo"] == "No recibe":
+            resumen_dinero_html = "No recibe"
+        else:
+            resumen_dinero_html = (
+                f"<b>{dinero_disp['tipo']}</b> | Moneda: {dinero_disp['moneda']} | "
+                f"Monto: {dinero_disp['monto']:,.2f} | Cotización: {dinero_disp['cotizacion']:,.2f} | "
+                f"<b>Total ARS: ${dinero_disp['total_ars']:,.2f}</b>"
+            )
 
         html_body = f"""
         <h2>Nueva Rendición Recibida - Wolf Internacional</h2>
         <p><b>Coordinador:</b> {coordinador}</p>
         <p><b>Coche:</b> {coche} | <b>Destino:</b> {destino}</p>
+        <p><b>Dinero disponible recibido:</b> {resumen_dinero_html}</p>
         <p><b>Archivos adjuntos:</b> {nombres_archivos}</p>
         <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;">
             <tr style="background:#1a3c6e;color:white;">
@@ -189,7 +238,7 @@ def enviar_notificacion_email(coordinador, coche, destino, df_gastos, archivos):
             </tr>
             {filas_html}
             <tr style="font-weight:bold;background:#f0f0f0;">
-                <td colspan="6" style="text-align:right">TOTAL GENERAL (ARS)</td>
+                <td colspan="6" style="text-align:right">TOTAL GENERAL RENDIDO (ARS)</td>
                 <td style="text-align:right">${total_ars:,.2f}</td>
                 <td colspan="3"></td>
             </tr>
@@ -208,11 +257,10 @@ def enviar_notificacion_email(coordinador, coche, destino, df_gastos, archivos):
         cuerpo_html.attach(MIMEText(html_body, "html"))
         msg.attach(cuerpo_html)
 
-        if archivos:
-            for archivo in archivos:
-                adjunto = MIMEApplication(archivo.getvalue(), Name=archivo.name)
-                adjunto["Content-Disposition"] = f'attachment; filename="{archivo.name}"'
-                msg.attach(adjunto)
+        for archivo in todos_los_archivos:
+            adjunto = MIMEApplication(archivo.getvalue(), Name=archivo.name)
+            adjunto["Content-Disposition"] = f'attachment; filename="{archivo.name}"'
+            msg.attach(adjunto)
 
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(sender_email, sender_password)
@@ -222,6 +270,7 @@ def enviar_notificacion_email(coordinador, coche, destino, df_gastos, archivos):
         st.warning(f"No se pudo enviar la notificación por correo: {e}")
         return False
 
+# --- BLOQUE 1 ---
 st.subheader("1. Datos Generales del Viaje")
 col1, col2, col3 = st.columns(3)
 with col1:
@@ -232,7 +281,76 @@ with col3:
     destino = st.text_input("Destino principal del viaje")
 
 st.markdown("---")
-st.subheader("2. Detalle de Comprobantes (Múltiples Gastos)")
+
+# --- BLOQUE 2 ---
+st.subheader("2. Dinero disponible")
+d_col1, d_col2, d_col3, d_col4, d_col5 = st.columns([1.4, 1.2, 1.2, 1.2, 1.2])
+
+with d_col1:
+    tipo_dinero = st.selectbox("Concepto", OPCIONES_DINERO_DISPONIBLE)
+
+deshabilitar_montos = (tipo_dinero == "No recibe")
+
+with d_col2:
+    moneda_dinero = st.selectbox("Tipo de moneda", MONEDAS, disabled=deshabilitar_montos)
+
+with d_col3:
+    monto_dinero = st.number_input(
+        "Monto",
+        min_value=0.0,
+        step=100.0,
+        format="%.2f",
+        disabled=deshabilitar_montos
+    )
+
+with d_col4:
+    cotizacion_dinero = st.number_input(
+        "Cotización pesos ARS",
+        min_value=0.0,
+        value=1.0,
+        step=10.0,
+        format="%.2f",
+        disabled=deshabilitar_montos or (moneda_dinero == "Pesos ARS")
+    )
+
+if deshabilitar_montos:
+    total_dinero_ars = 0.0
+    cotizacion_efectiva = 1.0
+elif moneda_dinero == "Pesos ARS":
+    cotizacion_efectiva = 1.0
+    total_dinero_ars = round(monto_dinero, 2)
+else:
+    cotizacion_efectiva = cotizacion_dinero
+    total_dinero_ars = round(monto_dinero * cotizacion_dinero, 2)
+
+with d_col5:
+    st.number_input(
+        "Total (ARS)",
+        value=total_dinero_ars,
+        format="%.2f",
+        disabled=True
+    )
+
+archivos_dinero_disp = st.file_uploader(
+    "Adjuntar comprobante de recepción de viático o transferencia de cambio (USD a ARS)",
+    type=["png", "jpg", "jpeg", "pdf"],
+    accept_multiple_files=True,
+    key="uploader_dinero_disponible",
+    disabled=deshabilitar_montos
+)
+
+dinero_disponible_data = {
+    "tipo": tipo_dinero,
+    "moneda": moneda_dinero,
+    "monto": monto_dinero,
+    "cotizacion": cotizacion_efectiva,
+    "total_ars": total_dinero_ars
+}
+
+st.markdown("---")
+
+# --- BLOQUE 3 ---
+st.subheader("3. Detalle de Comprobantes (Múltiples Gastos)")
 
 if "df_gastos" not in st.session_state:
     st.session_state.df_gastos = pd.DataFrame([{
@@ -272,11 +390,14 @@ if not df_recalculado.equals(st.session_state.df_gastos):
     st.rerun()
 
 st.markdown("---")
-st.subheader("3. Adjuntar Comprobantes (Obligatorio)")
+
+# --- BLOQUE 4 ---
+st.subheader("4. Adjuntar Comprobantes de Gastos (Obligatorio)")
 archivos_adjuntos = st.file_uploader(
     "Sube fotos o PDFs de los tickets",
     type=["png", "jpg", "jpeg", "pdf"],
-    accept_multiple_files=True
+    accept_multiple_files=True,
+    key="uploader_tickets_gastos"
 )
 
 enviado = st.button("🚀 Enviar Rendición Completa", type="primary")
@@ -284,10 +405,9 @@ enviado = st.button("🚀 Enviar Rendición Completa", type="primary")
 if enviado:
     df_final = st.session_state.df_gastos
     if not coordinador or not archivos_adjuntos or df_final.empty:
-        st.error("⚠️ Por favor completa el nombre del coordinador y asegúrate de adjuntar al menos un comprobante.")
+        st.error("⚠️ Por favor completa el nombre del coordinador y asegúrate de adjuntar al menos un comprobante de gasto.")
     else:
-        if guardar_en_sheets(coordinador, coche, destino, df_final, archivos_adjuntos):
-            enviar_notificacion_email(coordinador, coche, destino, df_final, archivos_adjuntos)
+        if guardar_en_sheets(coordinador, coche, destino, dinero_disponible_data, df_final, archivos_adjuntos, archivos_dinero_disp):
+            enviar_notificacion_email(coordinador, coche, destino, dinero_disponible_data, df_final, archivos_adjuntos, archivos_dinero_disp)
             st.success(f"¡Rendición procesada con éxito para **{coordinador}**!")
             st.dataframe(df_final, use_container_width=True)
-            
