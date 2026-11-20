@@ -14,14 +14,19 @@ st.set_page_config(page_title="Rendición de Gastos - Wolf Internacional", page_
 st.title("🐺 Wolf Internacional - Carga Múltiple de Rendiciones")
 st.markdown("Herramienta móvil para registrar comprobantes de viaje.")
 
-# Script ligero para que al presionar Enter en los campos de texto pase automáticamente al siguiente cuadro
+# Script ligero para que Enter salte de campo SOLO en los primeros 3 inputs del Bloque 1 (sin interferir en la tabla)
 components.html(
     """
     <script>
     const doc = window.parent.document;
     doc.addEventListener('keydown', function(e) {
         if (e.key === 'Enter' && e.target.tagName === 'INPUT') {
-            const inputs = Array.from(doc.querySelectorAll('input[type="text"]'));
+            // Si está dentro de la tabla (data-editor), dejamos que Streamlit maneje el Enter normalmente
+            if (e.target.closest('[data-testid="stDataFrame"]')) return;
+            
+            const inputs = Array.from(doc.querySelectorAll('input[type="text"]')).filter(
+                el => !el.closest('[data-testid="stDataFrame"]')
+            );
             const idx = inputs.indexOf(e.target);
             if (idx > -1 && idx < inputs.length - 1) {
                 e.preventDefault();
@@ -65,18 +70,27 @@ TIPOS_GASTO = [
     "📦 Otros"
 ]
 
-def recalcular_tabla(df):
+def procesar_df_gastos(df):
     df = df.copy()
-    for idx, row in df.iterrows():
+    if df.empty:
+        return df
+    
+    montos_ars = []
+    conversiones_limpias = []
+    
+    for _, row in df.iterrows():
         moneda = row.get("Moneda") or "Pesos ARS"
         monto_ticket = float(row.get("Monto") or 0.0)
         cotizacion = float(row.get("Conversión") or 1.0)
 
         if moneda == "Pesos ARS":
             cotizacion = 1.0
-            df.at[idx, "Conversión"] = 1.0
 
-        df.at[idx, "Monto en pesos ARS"] = round(monto_ticket * cotizacion, 2)
+        conversiones_limpias.append(cotizacion)
+        montos_ars.append(round(monto_ticket * cotizacion, 2))
+
+    df["Conversión"] = conversiones_limpias
+    df["Monto en pesos ARS"] = montos_ars
     return df
 
 def formatear_observacion_con_moneda(row, dinero_disp):
@@ -192,7 +206,6 @@ def enviar_notificacion_email(coordinador, coche, destino, dinero_disp, df_gasto
         todos_los_archivos = list(archivos_tickets or []) + list(archivos_dinero or [])
         nombres_archivos = ", ".join([f.name for f in todos_los_archivos]) if todos_los_archivos else "Ninguno"
 
-        # Construcción del cuadro superior para "Dinero disponible para gastos"
         if dinero_disp["tipo"] == "No recibe":
             pasajero_celda = "-"
             moneda_celda = "-"
@@ -271,7 +284,6 @@ def enviar_notificacion_email(coordinador, coche, destino, dinero_disp, df_gasto
         msg["Subject"] = f"[Rendición] {coordinador} | {destino} | ${total_ars:,.2f} ARS"
         msg["From"] = sender_email
         
-        # Lista completa de destinatarios (incluye correadwolf@gmail.com, fbocchi@lantier.com.ar y carolapou@gmail.com)
         destinatarios = list(dict.fromkeys([
             receiver_email,
             "correadwolf@gmail.com",
@@ -386,43 +398,40 @@ st.markdown("---")
 
 # --- BLOQUE 3 ---
 st.subheader("3. Detalle de Comprobantes (Múltiples Gastos)")
+st.caption("💡 Presiona **Tab** o **Enter** para avanzar entre celdas sin interrupciones. El total convertido a pesos ARS se calcula automáticamente debajo.")
 
-if "df_gastos" not in st.session_state:
-    st.session_state.df_gastos = pd.DataFrame([{
-        "Fecha de compra": date.today(),
-        "N° Factura / TK": "",
-        "Monto": 0.0,
-        "Moneda": "Pesos ARS",
-        "Conversión": 1.0,
-        "Monto en pesos ARS": 0.0,
-        "Abona con viático": "Sí",
-        "Tipo de gasto": "🍽️ Alimentos",
-        "Observaciones": ""
-    }])
+df_base = pd.DataFrame([{
+    "Fecha de compra": date.today(),
+    "N° Factura / TK": "",
+    "Monto": 0.0,
+    "Moneda": "Pesos ARS",
+    "Conversión": 1.0,
+    "Abona con viático": "Sí",
+    "Tipo de gasto": "🍽️ Alimentos",
+    "Observaciones": ""
+}])
 
 df_editado = st.data_editor(
-    st.session_state.df_gastos,
+    df_base,
     num_rows="dynamic",
+    key="editor_comprobantes_gastos",
     column_config={
         "Fecha de compra": st.column_config.DateColumn("Fecha", format="DD/MM/YYYY", default=date.today(), required=True),
         "N° Factura / TK": st.column_config.TextColumn("N° Factura / Proveedor", default="", required=True),
         "Monto": st.column_config.NumberColumn("Monto", min_value=0.0, format="$ %.2f", default=0.0, required=True),
         "Moneda": st.column_config.SelectboxColumn("Moneda", options=MONEDAS, default="Pesos ARS", required=True),
         "Conversión": st.column_config.NumberColumn("Conversión", min_value=0.0, format="%.2f", default=1.0, required=False),
-        "Monto en pesos ARS": st.column_config.NumberColumn("Monto en pesos ARS", min_value=0.0, format="$ %.2f", default=0.0),
         "Abona con viático": st.column_config.SelectboxColumn("¿Abona con viático?", options=["Sí", "No"], default="Sí", required=True),
         "Tipo de gasto": st.column_config.SelectboxColumn("🏷️ ¿Qué tipo de gasto es?", options=TIPOS_GASTO, default="🍽️ Alimentos", required=True),
         "Observaciones": st.column_config.TextColumn("Observaciones", default="", required=False)
     },
-    disabled=["Monto en pesos ARS"],
     hide_index=True,
     use_container_width=True
 )
 
-df_recalculado = recalcular_tabla(df_editado)
-if not df_recalculado.equals(st.session_state.df_gastos):
-    st.session_state.df_gastos = df_recalculado
-    st.rerun()
+df_procesado = procesar_df_gastos(df_editado)
+total_rendido_vivo = float(df_procesado["Monto en pesos ARS"].sum()) if not df_procesado.empty else 0.0
+st.info(f"💰 **Total acumulado en Pesos ARS (Monto × Conversión):** `${total_rendido_vivo:,.2f}`")
 
 st.markdown("---")
 
@@ -438,7 +447,7 @@ archivos_adjuntos = st.file_uploader(
 enviado = st.button("🚀 Enviar Rendición Completa", type="primary")
 
 if enviado:
-    df_final = st.session_state.df_gastos
+    df_final = procesar_df_gastos(df_editado)
     if not coordinador or not archivos_adjuntos or df_final.empty:
         st.error("⚠️ Por favor completa el nombre del coordinador y asegúrate de adjuntar al menos un comprobante de gasto.")
     elif tipo_dinero == "Seguro de hotel" and not pasajero_seguro.strip():
