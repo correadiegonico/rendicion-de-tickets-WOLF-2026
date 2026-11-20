@@ -112,30 +112,25 @@ def buscar_hoja_por_nombre(spreadsheet, nombre_buscado):
             return ws
     return None
 
-def guardar_en_sheets(coordinador, coche, destino, dinero_disp, df_gastos, archivos_tickets, archivos_dinero):
+def guardar_en_sheets(coordinador, coche, destino, dinero_disp, df_gastos, archivos_tickets):
     try:
         client = obtener_cliente_gspread()
         spreadsheet = client.open_by_key(SPREADSHEET_ID)
         
-        # 1. Buscar la hoja "rendiciones" (o usar la primera hoja si tiene otro nombre)
         sheet_rendiciones = buscar_hoja_por_nombre(spreadsheet, "rendiciones") or spreadsheet.sheet1
-        nombre_hoja_rendiciones = sheet_rendiciones.title
 
         enlace_comprobante = (
             f"Enviado por mail ({', '.join([f.name for f in archivos_tickets])})"
             if archivos_tickets else "Sin adjunto"
         )
 
-        # El monto Total (ARS) del bloque 2 va en la columna C.
-        # Si hay múltiples filas en la misma rendición, se coloca el total en la primera fila
-        # y 0 en las siguientes para que la suma de la columna C no duplique el viático.
         for idx, row in df_gastos.iterrows():
             numero_orden = str(idx + 1)
             monto_final_ars = float(row["Monto en pesos ARS"])
             observaciones_final = formatear_observacion_con_moneda(row, dinero_disp)
             viatico_columna_c = float(dinero_disp["total_ars"]) if idx == 0 else 0.0
 
-            # Mapeo de columnas A hasta L:
+            # Mapeo de columnas A hasta L en "rendiciones":
             # A: Destino | B: Coordinador | C: Viático (Total ARS) | D: Fecha | E: Orden TK | F: Factura/TK
             # G: Monto en pesos ARS | H: Enlace | I: (Vacío) | J: Abona con viático | K: Observaciones | L: Tipo de gasto
             sheet_rendiciones.append_row([
@@ -152,20 +147,6 @@ def guardar_en_sheets(coordinador, coche, destino, dinero_disp, df_gastos, archi
                 observaciones_final,
                 str(row.get("Tipo de gasto", ""))
             ])
-
-        # 2. Buscar o crear la hoja "cajas por coord" y colocar en la columna B la suma de la columna C de rendiciones
-        sheet_cajas = buscar_hoja_por_nombre(spreadsheet, "cajas por coord")
-        if not sheet_cajas:
-            sheet_cajas = spreadsheet.add_worksheet(title="cajas por coord", rows="1000", cols="10")
-
-        nombre_coord_completo = f"{coordinador} - {destino} (Coche: {coche})" if coche else f"{coordinador} - {destino}"
-        formula_suma_viaticos = f"=SUM('{nombre_hoja_rendiciones}'!C:C)"
-
-        col_b_values = sheet_cajas.col_values(2)
-        siguiente_fila = len(col_b_values) + 1
-        
-        sheet_cajas.update_cell(siguiente_fila, 1, nombre_coord_completo)
-        sheet_cajas.update(f"B{siguiente_fila}", [[formula_suma_viaticos]], value_input_option="USER_ENTERED")
 
         return True
     except Exception as e:
@@ -211,26 +192,59 @@ def enviar_notificacion_email(coordinador, coche, destino, dinero_disp, df_gasto
         todos_los_archivos = list(archivos_tickets or []) + list(archivos_dinero or [])
         nombres_archivos = ", ".join([f.name for f in todos_los_archivos]) if todos_los_archivos else "Ninguno"
 
+        # Construcción del cuadro superior para "Dinero disponible para gastos"
         if dinero_disp["tipo"] == "No recibe":
-            resumen_dinero_html = "No recibe ($0.00 ARS)"
+            pasajero_celda = "-"
+            moneda_celda = "-"
+            monto_celda = "$0.00"
+            cotiz_celda = "-"
+            total_disp_celda = "$0.00"
         else:
-            pasajero_html = (
-                f" | <b>Pasajero:</b> {dinero_disp['pasajero']}"
+            pasajero_celda = (
+                dinero_disp["pasajero"]
                 if dinero_disp["tipo"] == "Seguro de hotel" and dinero_disp.get("pasajero")
-                else ""
+                else "-"
             )
-            resumen_dinero_html = (
-                f"<b>{dinero_disp['tipo']}</b>{pasajero_html} | Moneda: {dinero_disp['moneda']} | "
-                f"Monto: {dinero_disp['monto']:,.2f} | Cotización: {dinero_disp['cotizacion']:,.2f} | "
-                f"<b>Total ARS: ${dinero_disp['total_ars']:,.2f}</b>"
-            )
+            moneda_celda = dinero_disp["moneda"]
+            monto_celda = f"${dinero_disp['monto']:,.2f}"
+            cotiz_celda = f"{dinero_disp['cotizacion']:,.2f}" if dinero_disp["moneda"] != "Pesos ARS" else "-"
+            total_disp_celda = f"${dinero_disp['total_ars']:,.2f}"
+
+        tabla_dinero_html = f"""
+        <h3 style="margin-bottom:6px;color:#1a3c6e;">Dinero disponible para gastos</h3>
+        <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;margin-bottom:18px;">
+            <tr style="background:#1a3c6e;color:white;">
+                <th>Proviene de...</th>
+                <th>Pasajero (Seguro Hotel)</th>
+                <th>Tipo de Moneda</th>
+                <th>Monto</th>
+                <th>Cotización pesos ARS</th>
+                <th>Total (ARS)</th>
+            </tr>
+            <tr>
+                <td>{dinero_disp['tipo']}</td>
+                <td>{pasajero_celda}</td>
+                <td>{moneda_celda}</td>
+                <td style="text-align:right">{monto_celda}</td>
+                <td style="text-align:right">{cotiz_celda}</td>
+                <td style="text-align:right"><b>{total_disp_celda}</b></td>
+            </tr>
+            <tr style="font-weight:bold;background:#f0f0f0;">
+                <td colspan="5" style="text-align:right">TOTAL DINERO DISPONIBLE (ARS)</td>
+                <td style="text-align:right">{total_disp_celda}</td>
+            </tr>
+        </table>
+        """
 
         html_body = f"""
         <h2>Nueva Rendición Recibida - Wolf Internacional</h2>
         <p><b>Coordinador:</b> {coordinador}</p>
         <p><b>Coche:</b> {coche} | <b>Destino:</b> {destino}</p>
-        <p><b>Dinero disponible para gastos:</b> {resumen_dinero_html}</p>
         <p><b>Archivos adjuntos:</b> {nombres_archivos}</p>
+        
+        {tabla_dinero_html}
+
+        <h3 style="margin-bottom:6px;color:#1a3c6e;">Detalle de Comprobantes Rendidos</h3>
         <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;">
             <tr style="background:#1a3c6e;color:white;">
                 <th>N° TK</th>
@@ -257,9 +271,14 @@ def enviar_notificacion_email(coordinador, coche, destino, dinero_disp, df_gasto
         msg["Subject"] = f"[Rendición] {coordinador} | {destino} | ${total_ars:,.2f} ARS"
         msg["From"] = sender_email
         
-        segundo_receptor = "fbocchi@lantier.com.ar"
-        msg["To"] = f"{receiver_email}, {segundo_receptor}"
-        destinatarios = [receiver_email, segundo_receptor]
+        # Lista completa de destinatarios (incluye correadwolf@gmail.com, fbocchi@lantier.com.ar y carolapou@gmail.com)
+        destinatarios = list(dict.fromkeys([
+            receiver_email,
+            "correadwolf@gmail.com",
+            "fbocchi@lantier.com.ar",
+            "carolapou@gmail.com"
+        ]))
+        msg["To"] = ", ".join(destinatarios)
 
         cuerpo_html = MIMEMultipart("alternative")
         cuerpo_html.attach(MIMEText(html_body, "html"))
@@ -425,7 +444,7 @@ if enviado:
     elif tipo_dinero == "Seguro de hotel" and not pasajero_seguro.strip():
         st.error("⚠️ Seleccionaste 'Seguro de hotel'. Por favor ingresa el Nombre y Apellido del Pasajero.")
     else:
-        if guardar_en_sheets(coordinador, coche, destino, dinero_disponible_data, df_final, archivos_adjuntos, archivos_dinero_disp):
+        if guardar_en_sheets(coordinador, coche, destino, dinero_disponible_data, df_final, archivos_adjuntos):
             enviar_notificacion_email(coordinador, coche, destino, dinero_disponible_data, df_final, archivos_adjuntos, archivos_dinero_disp)
             st.success(f"¡Rendición procesada con éxito para **{coordinador}**!")
             st.dataframe(df_final, use_container_width=True)
