@@ -14,19 +14,14 @@ st.set_page_config(page_title="Rendición de Gastos - Wolf Internacional", page_
 st.title("🐺 Wolf Internacional - Carga Múltiple de Rendiciones")
 st.markdown("Herramienta móvil para registrar comprobantes de viaje.")
 
-# Script ligero para que Enter salte de campo SOLO en los primeros 3 inputs del Bloque 1 (sin interferir en la tabla)
+# Script ligero para que Enter avance al siguiente campo de texto
 components.html(
     """
     <script>
     const doc = window.parent.document;
     doc.addEventListener('keydown', function(e) {
         if (e.key === 'Enter' && e.target.tagName === 'INPUT') {
-            // Si está dentro de la tabla (data-editor), dejamos que Streamlit maneje el Enter normalmente
-            if (e.target.closest('[data-testid="stDataFrame"]')) return;
-            
-            const inputs = Array.from(doc.querySelectorAll('input[type="text"]')).filter(
-                el => !el.closest('[data-testid="stDataFrame"]')
-            );
+            const inputs = Array.from(doc.querySelectorAll('input:not([disabled])'));
             const idx = inputs.indexOf(e.target);
             if (idx > -1 && idx < inputs.length - 1) {
                 e.preventDefault();
@@ -70,29 +65,6 @@ TIPOS_GASTO = [
     "📦 Otros"
 ]
 
-def procesar_df_gastos(df):
-    df = df.copy()
-    if df.empty:
-        return df
-    
-    montos_ars = []
-    conversiones_limpias = []
-    
-    for _, row in df.iterrows():
-        moneda = row.get("Moneda") or "Pesos ARS"
-        monto_ticket = float(row.get("Monto") or 0.0)
-        cotizacion = float(row.get("Conversión") or 1.0)
-
-        if moneda == "Pesos ARS":
-            cotizacion = 1.0
-
-        conversiones_limpias.append(cotizacion)
-        montos_ars.append(round(monto_ticket * cotizacion, 2))
-
-    df["Conversión"] = conversiones_limpias
-    df["Monto en pesos ARS"] = montos_ars
-    return df
-
 def formatear_observacion_con_moneda(row, dinero_disp):
     moneda = row.get("Moneda") or "Pesos ARS"
     monto_ticket = float(row.get("Monto") or 0.0)
@@ -126,7 +98,7 @@ def buscar_hoja_por_nombre(spreadsheet, nombre_buscado):
             return ws
     return None
 
-def guardar_en_sheets(coordinador, coche, destino, dinero_disp, df_gastos, archivos_tickets):
+def guardar_en_sheets(coordinador, coche, destino, dinero_disp, lista_gastos, archivos_tickets):
     try:
         client = obtener_cliente_gspread()
         spreadsheet = client.open_by_key(SPREADSHEET_ID)
@@ -138,7 +110,7 @@ def guardar_en_sheets(coordinador, coche, destino, dinero_disp, df_gastos, archi
             if archivos_tickets else "Sin adjunto"
         )
 
-        for idx, row in df_gastos.iterrows():
+        for idx, row in enumerate(lista_gastos):
             numero_orden = str(idx + 1)
             monto_final_ars = float(row["Monto en pesos ARS"])
             observaciones_final = formatear_observacion_con_moneda(row, dinero_disp)
@@ -168,16 +140,16 @@ def guardar_en_sheets(coordinador, coche, destino, dinero_disp, df_gastos, archi
         st.exception(e)
         return False
 
-def enviar_notificacion_email(coordinador, coche, destino, dinero_disp, df_gastos, archivos_tickets, archivos_dinero):
+def enviar_notificacion_email(coordinador, coche, destino, dinero_disp, lista_gastos, archivos_tickets, archivos_dinero):
     try:
         sender_email = st.secrets["email"]["sender_email"]
         sender_password = st.secrets["email"]["sender_password"]
         receiver_email = st.secrets["email"]["receiver_email"]
 
-        total_ars = float(df_gastos["Monto en pesos ARS"].sum())
+        total_ars = sum(float(r["Monto en pesos ARS"]) for r in lista_gastos)
         filas_html = ""
 
-        for idx, r in df_gastos.iterrows():
+        for idx, r in enumerate(lista_gastos):
             num_tk = idx + 1
             monto_ticket = float(r.get("Monto") or 0.0)
             moneda = r.get("Moneda") or "Pesos ARS"
@@ -398,40 +370,88 @@ st.markdown("---")
 
 # --- BLOQUE 3 ---
 st.subheader("3. Detalle de Comprobantes (Múltiples Gastos)")
-st.caption("💡 Presiona **Tab** o **Enter** para avanzar entre celdas sin interrupciones. El total convertido a pesos ARS se calcula automáticamente debajo.")
 
-df_base = pd.DataFrame([{
-    "Fecha de compra": date.today(),
-    "N° Factura / TK": "",
-    "Monto": 0.0,
-    "Moneda": "Pesos ARS",
-    "Conversión": 1.0,
-    "Abona con viático": "Sí",
-    "Tipo de gasto": "🍽️ Alimentos",
-    "Observaciones": ""
-}])
+if "filas_ids" not in st.session_state:
+    st.session_state.filas_ids = [0]
+    st.session_state.next_fila_id = 1
 
-df_editado = st.data_editor(
-    df_base,
-    num_rows="dynamic",
-    key="editor_comprobantes_gastos",
-    column_config={
-        "Fecha de compra": st.column_config.DateColumn("Fecha", format="DD/MM/YYYY", default=date.today(), required=True),
-        "N° Factura / TK": st.column_config.TextColumn("N° Factura / Proveedor", default="", required=True),
-        "Monto": st.column_config.NumberColumn("Monto", min_value=0.0, format="$ %.2f", default=0.0, required=True),
-        "Moneda": st.column_config.SelectboxColumn("Moneda", options=MONEDAS, default="Pesos ARS", required=True),
-        "Conversión": st.column_config.NumberColumn("Conversión", min_value=0.0, format="%.2f", default=1.0, required=False),
-        "Abona con viático": st.column_config.SelectboxColumn("¿Abona con viático?", options=["Sí", "No"], default="Sí", required=True),
-        "Tipo de gasto": st.column_config.SelectboxColumn("🏷️ ¿Qué tipo de gasto es?", options=TIPOS_GASTO, default="🍽️ Alimentos", required=True),
-        "Observaciones": st.column_config.TextColumn("Observaciones", default="", required=False)
-    },
-    hide_index=True,
-    use_container_width=True
-)
+def agregar_fila_gasto():
+    st.session_state.filas_ids.append(st.session_state.next_fila_id)
+    st.session_state.next_fila_id += 1
 
-df_procesado = procesar_df_gastos(df_editado)
-total_rendido_vivo = float(df_procesado["Monto en pesos ARS"].sum()) if not df_procesado.empty else 0.0
-st.info(f"💰 **Total acumulado en Pesos ARS (Monto × Conversión):** `${total_rendido_vivo:,.2f}`")
+def eliminar_fila_gasto(fid):
+    if len(st.session_state.filas_ids) > 1:
+        st.session_state.filas_ids.remove(fid)
+
+lista_gastos_actual = []
+
+for idx_visual, fid in enumerate(st.session_state.filas_ids):
+    with st.container(border=True):
+        top_c1, top_c2 = st.columns([6, 1])
+        with top_c1:
+            st.markdown(f"**Comprobante #{idx_visual + 1}**")
+        with top_c2:
+            if len(st.session_state.filas_ids) > 1:
+                st.button("🗑️ Quitar", key=f"del_{fid}", on_click=eliminar_fila_gasto, args=(fid,))
+
+        r1_c1, r1_c2, r1_c3, r1_c4, r1_c5, r1_c6 = st.columns([1.2, 1.5, 1.2, 1.1, 1.1, 1.3])
+        with r1_c1:
+            f_fecha = st.date_input("Fecha", value=date.today(), format="DD/MM/YYYY", key=f"fecha_{fid}")
+        with r1_c2:
+            f_factura = st.text_input("N° Factura / Proveedor", key=f"fac_{fid}")
+        with r1_c3:
+            f_monto = st.number_input("Monto", min_value=0.0, step=100.0, format="%.2f", key=f"monto_{fid}")
+        with r1_c4:
+            f_moneda = st.selectbox("Moneda", MONEDAS, key=f"moneda_{fid}")
+        with r1_c5:
+            # Bloqueada automáticamente cuando la moneda es "Pesos ARS"
+            es_pesos = (f_moneda == "Pesos ARS")
+            f_conversion = st.number_input(
+                "Conversión",
+                min_value=0.0,
+                value=1.0,
+                step=10.0,
+                format="%.2f",
+                disabled=es_pesos,
+                key=f"conv_{fid}"
+            )
+
+        cotiz_real = 1.0 if es_pesos else f_conversion
+        monto_ars_fila = round(f_monto * cotiz_real, 2)
+
+        with r1_c6:
+            st.number_input(
+                "Monto en pesos ARS",
+                value=monto_ars_fila,
+                format="%.2f",
+                disabled=True,
+                key=f"ars_{fid}"
+            )
+
+        r2_c1, r2_c2, r2_c3 = st.columns([1.1, 2.0, 2.9])
+        with r2_c1:
+            f_viatico = st.selectbox("¿Abona con viático?", ["Sí", "No"], key=f"viat_{fid}")
+        with r2_c2:
+            f_tipo = st.selectbox("🏷️ ¿Qué tipo de gasto es?", TIPOS_GASTO, index=1, key=f"tipo_{fid}")
+        with r2_c3:
+            f_obs = st.text_input("Observaciones", key=f"obs_{fid}")
+
+        lista_gastos_actual.append({
+            "Fecha de compra": f_fecha,
+            "N° Factura / TK": f_factura,
+            "Monto": f_monto,
+            "Moneda": f_moneda,
+            "Conversión": cotiz_real,
+            "Monto en pesos ARS": monto_ars_fila,
+            "Abona con viático": f_viatico,
+            "Tipo de gasto": f_tipo,
+            "Observaciones": f_obs
+        })
+
+st.button("➕ Agregar otro comprobante", on_click=agregar_fila_gasto)
+
+total_rendido_vivo = sum(item["Monto en pesos ARS"] for item in lista_gastos_actual)
+st.info(f"💰 **Total acumulado en Pesos ARS:** `${total_rendido_vivo:,.2f}`")
 
 st.markdown("---")
 
@@ -447,13 +467,12 @@ archivos_adjuntos = st.file_uploader(
 enviado = st.button("🚀 Enviar Rendición Completa", type="primary")
 
 if enviado:
-    df_final = procesar_df_gastos(df_editado)
-    if not coordinador or not archivos_adjuntos or df_final.empty:
+    if not coordinador or not archivos_adjuntos or not lista_gastos_actual:
         st.error("⚠️ Por favor completa el nombre del coordinador y asegúrate de adjuntar al menos un comprobante de gasto.")
     elif tipo_dinero == "Seguro de hotel" and not pasajero_seguro.strip():
         st.error("⚠️ Seleccionaste 'Seguro de hotel'. Por favor ingresa el Nombre y Apellido del Pasajero.")
     else:
-        if guardar_en_sheets(coordinador, coche, destino, dinero_disponible_data, df_final, archivos_adjuntos):
-            enviar_notificacion_email(coordinador, coche, destino, dinero_disponible_data, df_final, archivos_adjuntos, archivos_dinero_disp)
+        if guardar_en_sheets(coordinador, coche, destino, dinero_disponible_data, lista_gastos_actual, archivos_adjuntos):
+            enviar_notificacion_email(coordinador, coche, destino, dinero_disponible_data, lista_gastos_actual, archivos_adjuntos, archivos_dinero_disp)
             st.success(f"¡Rendición procesada con éxito para **{coordinador}**!")
-            st.dataframe(df_final, use_container_width=True)
+            st.dataframe(pd.DataFrame(lista_gastos_actual), use_container_width=True)
