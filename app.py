@@ -106,26 +106,42 @@ def obtener_cliente_gspread():
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     return gspread.authorize(creds)
 
+def buscar_hoja_por_nombre(spreadsheet, nombre_buscado):
+    for ws in spreadsheet.worksheets():
+        if ws.title.strip().lower() == nombre_buscado.strip().lower():
+            return ws
+    return None
+
 def guardar_en_sheets(coordinador, coche, destino, dinero_disp, df_gastos, archivos_tickets, archivos_dinero):
     try:
         client = obtener_cliente_gspread()
         spreadsheet = client.open_by_key(SPREADSHEET_ID)
         
-        # 1. Guardar comprobantes de gastos en la hoja principal (sheet1)
-        sheet = spreadsheet.sheet1
+        # 1. Buscar la hoja "rendiciones" (o usar la primera hoja si tiene otro nombre)
+        sheet_rendiciones = buscar_hoja_por_nombre(spreadsheet, "rendiciones") or spreadsheet.sheet1
+        nombre_hoja_rendiciones = sheet_rendiciones.title
+
         enlace_comprobante = (
             f"Enviado por mail ({', '.join([f.name for f in archivos_tickets])})"
             if archivos_tickets else "Sin adjunto"
         )
 
+        # El monto Total (ARS) del bloque 2 va en la columna C.
+        # Si hay múltiples filas en la misma rendición, se coloca el total en la primera fila
+        # y 0 en las siguientes para que la suma de la columna C no duplique el viático.
         for idx, row in df_gastos.iterrows():
             numero_orden = str(idx + 1)
             monto_final_ars = float(row["Monto en pesos ARS"])
             observaciones_final = formatear_observacion_con_moneda(row, dinero_disp)
+            viatico_columna_c = float(dinero_disp["total_ars"]) if idx == 0 else 0.0
 
-            sheet.append_row([
+            # Mapeo de columnas A hasta L:
+            # A: Destino | B: Coordinador | C: Viático (Total ARS) | D: Fecha | E: Orden TK | F: Factura/TK
+            # G: Monto en pesos ARS | H: Enlace | I: (Vacío) | J: Abona con viático | K: Observaciones | L: Tipo de gasto
+            sheet_rendiciones.append_row([
                 destino,
                 f"{coordinador} (Coche: {coche})" if coche else coordinador,
+                viatico_columna_c,
                 str(row["Fecha de compra"]),
                 numero_orden,
                 str(row["N° Factura / TK"]),
@@ -137,39 +153,19 @@ def guardar_en_sheets(coordinador, coche, destino, dinero_disp, df_gastos, archi
                 str(row.get("Tipo de gasto", ""))
             ])
 
-        # 2. Guardar Dinero Disponible en la columna B de la hoja "cajas por coord"
-        try:
-            sheet_cajas = spreadsheet.worksheet("cajas por coord")
-        except gspread.WorksheetNotFound:
+        # 2. Buscar o crear la hoja "cajas por coord" y colocar en la columna B la suma de la columna C de rendiciones
+        sheet_cajas = buscar_hoja_por_nombre(spreadsheet, "cajas por coord")
+        if not sheet_cajas:
             sheet_cajas = spreadsheet.add_worksheet(title="cajas por coord", rows="1000", cols="10")
 
         nombre_coord_completo = f"{coordinador} - {destino} (Coche: {coche})" if coche else f"{coordinador} - {destino}"
-        
-        if dinero_disp["tipo"] == "No recibe":
-            valor_columna_b = "No recibe"
-        else:
-            pasajero_txt = (
-                f" (Pasajero: {dinero_disp['pasajero']})"
-                if dinero_disp["tipo"] == "Seguro de hotel" and dinero_disp.get("pasajero")
-                else ""
-            )
-            adj_dinero_txt = (
-                f" | Comprobante: {', '.join([f.name for f in archivos_dinero])}"
-                if archivos_dinero else ""
-            )
-            if dinero_disp["moneda"] == "Pesos ARS":
-                valor_columna_b = f"{dinero_disp['tipo']}{pasajero_txt}: ${dinero_disp['total_ars']:,.2f} ARS{adj_dinero_txt}"
-            else:
-                valor_columna_b = (
-                    f"{dinero_disp['tipo']}{pasajero_txt}: {dinero_disp['moneda']} {dinero_disp['monto']:,.2f} "
-                    f"(Cotiz. {dinero_disp['cotizacion']:,.2f}) = ${dinero_disp['total_ars']:,.2f} ARS{adj_dinero_txt}"
-                )
+        formula_suma_viaticos = f"=SUM('{nombre_hoja_rendiciones}'!C:C)"
 
         col_b_values = sheet_cajas.col_values(2)
         siguiente_fila = len(col_b_values) + 1
         
         sheet_cajas.update_cell(siguiente_fila, 1, nombre_coord_completo)
-        sheet_cajas.update_cell(siguiente_fila, 2, valor_columna_b)
+        sheet_cajas.update(f"B{siguiente_fila}", [[formula_suma_viaticos]], value_input_option="USER_ENTERED")
 
         return True
     except Exception as e:
@@ -216,7 +212,7 @@ def enviar_notificacion_email(coordinador, coche, destino, dinero_disp, df_gasto
         nombres_archivos = ", ".join([f.name for f in todos_los_archivos]) if todos_los_archivos else "Ninguno"
 
         if dinero_disp["tipo"] == "No recibe":
-            resumen_dinero_html = "No recibe"
+            resumen_dinero_html = "No recibe ($0.00 ARS)"
         else:
             pasajero_html = (
                 f" | <b>Pasajero:</b> {dinero_disp['pasajero']}"
